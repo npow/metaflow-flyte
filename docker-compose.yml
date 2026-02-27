@@ -1,0 +1,27 @@
+version: "3.8"
+# Flyte sandbox — single-container local Flyte cluster for end-to-end testing.
+# Start with:   docker compose up -d
+# Wait ~60s for Flyte to initialize, then:
+#   flytectl config init --host localhost:30080 --insecure
+#   pyflyte register --project flytesnacks --domain development <generated_file.py>
+#   pyflyte run --remote --project flytesnacks --domain development <generated_file.py> <workflow_name>
+# Flyte UI:  http://localhost:30080/console
+services:
+  flyte-sandbox:
+    image: cr.flyte.org/flyteorg/flyte-sandbox:latest
+    ports:
+      - "30080:30080"  # Flyte Admin / UI
+      - "30081:30081"  # Flyte Propeller metrics
+      - "30082:30082"  # MinIO (S3-compatible artifact store)
+      - "30084:30084"  # Postgres
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - FLYTE_SANDBOX_PROXY_ENABLED=true
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:30080/healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s

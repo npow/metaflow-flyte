@@ -1,0 +1,50 @@
+[project]
+name = "metaflow-flyte"
+version = "0.1.0"
+description = "Run Metaflow flows as Flyte workflows"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Nissan Pow", email = "nissan.pow@gmail.com" }]
+keywords = ["metaflow", "flyte", "workflow", "orchestration", "mlops"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "metaflow>=2.9",
+    "flytekit>=1.10",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-timeout>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/npow/metaflow-flyte"
+Repository = "https://github.com/npow/metaflow-flyte"
+
+[tool.setuptools.packages.find]
+include = ["metaflow_extensions*"]
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: local execution tests using pyflyte run (no cluster required)",
+    "e2e: requires a running Flyte cluster (docker-compose)",
+]
