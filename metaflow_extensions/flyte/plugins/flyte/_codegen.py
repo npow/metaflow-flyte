@@ -230,6 +230,7 @@ def _emit_helpers(cb: _CB, cfg: FlyteFlowConfig) -> None:
     cb.emit("def _run_cmd(cmd: list[str], extra_env: dict[str, str] | None = None) -> None:")
     cb.indent()
     cb.emit("env = os.environ.copy()")
+    cb.emit("env.setdefault('METAFLOW_DATASTORE_SYSROOT_LOCAL', os.path.expanduser('~'))")
     cb.emit("if extra_env:")
     cb.indent()
     cb.emit("env.update(extra_env)")
@@ -405,6 +406,12 @@ def _emit_run_id_task(cb: _CB) -> None:
     cb.indent()
     cb.emit("ctx = current_context()")
     cb.emit("name = ctx.execution_id.name")
+    cb.emit("# Check for a pre-seeded run ID (set by local trigger for deterministic pathspec).")
+    cb.emit("seeded = os.environ.get('METAFLOW_FLYTE_LOCAL_RUN_ID')")
+    cb.emit("if seeded:")
+    cb.indent()
+    cb.emit("return seeded")
+    cb.dedent()
     cb.emit("# 'local' is the placeholder used by pyflyte run without --remote;")
     cb.emit("# generate a unique id so each local run gets its own Metaflow run.")
     cb.emit("if not name or name == 'local':")
@@ -613,6 +620,7 @@ def _emit_start_init(cb: _CB, spec: FlowSpec) -> None:
         for p in spec.parameters:
             cb.emit('_init_cmd += ["--%s", str(_param_%s)]' % (p.name, p.name))
     cb.emit("_init_env: dict[str, str] = os.environ.copy()")
+    cb.emit("_init_env.setdefault('METAFLOW_DATASTORE_SYSROOT_LOCAL', os.path.expanduser('~'))")
     cb.emit("subprocess.run(_init_cmd, env=_init_env, check=True)")
 
 

@@ -46,7 +46,7 @@ def flyte(obj: object) -> None:
 
 
 @flyte.command(help="Compile this flow to a Flyte workflow Python file.")
-@click.argument("output_file", required=True)
+@click.option("--output-file", "output_file", default=None, help="Output file path.")
 @click.option(
     "--tag",
     "tags",
@@ -86,10 +86,14 @@ def flyte(obj: object) -> None:
 )
 @click.option("--branch", default=None, help="@project branch name (for project flows).")
 @click.option("--production", is_flag=True, default=False, help="Deploy to the production branch.")
+@click.option(
+    "--deployer-attribute-file", default=None, hidden=True,
+    help="Write deployment info JSON here (used by Metaflow Deployer API).",
+)
 @click.pass_obj
 def create(
     obj: object,
-    output_file: str,
+    output_file: str | None,
     tags: tuple[str, ...],
     user_namespace: str | None,
     with_decorators: tuple[str, ...],
@@ -100,7 +104,12 @@ def create(
     max_parallelism: int | None,
     branch: str | None,
     production: bool,
+    deployer_attribute_file: str | None,
 ) -> None:
+    import json
+    flow_name = obj.flow.name  # type: ignore[attr-defined]
+    if output_file is None:
+        output_file = "%s_flyte.py" % flow_name.lower()
     if os.path.abspath(sys.argv[0]) == os.path.abspath(output_file):
         raise MetaflowException(
             "Output file name cannot be the same as the flow file name."
@@ -112,12 +121,34 @@ def create(
         branch=branch, production=production,
     )
 
+    if deployer_attribute_file:
+        # Capture env vars needed for local execution so from_deployment can restore them.
+        import os as _os
+        _env_keys = ("METAFLOW_DEFAULT_METADATA", "METAFLOW_DEFAULT_DATASTORE",
+                     "METAFLOW_DEFAULT_ENVIRONMENT", "METAFLOW_DATASTORE_SYSROOT_LOCAL")
+        _saved_env = {k: _os.environ[k] for k in _env_keys if k in _os.environ}
+        with open(deployer_attribute_file, "w") as f:
+            json.dump(
+                {
+                    "name": flow_name,
+                    "flow_name": flow_name,
+                    "metadata": "{}",
+                    "additional_info": {
+                        "workflow_file": os.path.abspath(output_file),
+                        "flyte_project": flyte_project,
+                        "flyte_domain": flyte_domain,
+                        "saved_env": _saved_env,
+                    },
+                },
+                f,
+            )
+
     obj.echo(  # type: ignore[attr-defined]
         "Flyte workflow file written to *{out}*.\n"
         "Run locally: pyflyte run {out} {wf}\n"
         "Register:    python {flow} flyte register {out}".format(
             out=output_file,
-            wf=_wf_fn(obj.flow.name),  # type: ignore[attr-defined]
+            wf=_wf_fn(flow_name),
             flow=sys.argv[0],
         ),
         bold=True,
@@ -394,7 +425,8 @@ def deploy(
 # ---------------------------------------------------------------------------
 
 
-@flyte.command(help="Trigger a Flyte workflow execution via pyflyte run --remote.")
+@flyte.command(help="Trigger a Flyte workflow execution via pyflyte run.")
+@click.option("--name", default=None, hidden=True, help="Flow name override (Deployer API).")
 @click.option("--tag", "tags", multiple=True, default=None)
 @click.option("--namespace", "user_namespace", default=None)
 @click.option("--with", "with_decorators", multiple=True, default=None)
@@ -419,6 +451,7 @@ def deploy(
 @click.pass_obj
 def trigger(
     obj: object,
+    name: str | None,
     tags: tuple[str, ...],
     user_namespace: str | None,
     with_decorators: tuple[str, ...],
@@ -442,6 +475,10 @@ def trigger(
         k, _, v = kv.partition("=")
         params[k.strip()] = v.strip()
 
+    flow_name = name or obj.flow.name  # type: ignore[attr-defined]
+    run_id = "flyte-local-" + uuid.uuid4().hex[:12]
+    pathspec = "%s/%s" % (flow_name, run_id)
+
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tmp:
         tmp_path = tmp.name
 
@@ -452,47 +489,39 @@ def trigger(
             branch=branch, production=production,
         )
 
-        flow_name = obj.flow.name  # type: ignore[attr-defined]
         wf_name = _wf_fn(flow_name)
 
-        cmd = [
-            "pyflyte", "run", "--remote",
-            "--project", flyte_project,
-            "--domain", flyte_domain,
-            tmp_path, wf_name,
-        ]
-        for k, v in params.items():
-            cmd += ["--%s" % k, v]
-
-        obj.echo("Triggering: %s" % " ".join(cmd), bold=True)  # type: ignore[attr-defined]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise FlyteException(
-                "pyflyte run failed with exit code %d:\n%s" % (result.returncode, result.stderr)
-            )
-
-        # Attempt to extract a Flyte execution ID from pyflyte output.
-        execution_id = uuid.uuid4().hex[:12]
-        for line in (result.stdout + result.stderr).splitlines():
-            if "execution" in line.lower() and "id" in line.lower():
-                parts = line.split()
-                if parts:
-                    execution_id = parts[-1].strip().strip("'\"")
-                    break
-
-        run_id = "flyte-%s" % execution_id
-        pathspec = "%s/%s" % (flow_name, run_id)
-
+        # Write the deployer attribute file BEFORE execution so handle_timeout
+        # can read it immediately (pyflyte run is synchronous and blocking).
         if deployer_attribute_file:
             with open(deployer_attribute_file, "w") as f:
                 json.dump(
                     {
                         "pathspec": pathspec,
-                        "name": wf_name,
+                        "name": flow_name,
                         "metadata": "{}",
                     },
                     f,
                 )
+
+        # Run locally (no --remote): pyflyte executes tasks as local Python
+        # functions so Metaflow metadata is written to ~/.metaflow/.
+        # Use pyflyte from the same env as the current Python interpreter.
+        import os as _os
+        _pyflyte = _os.path.join(_os.path.dirname(sys.executable), "pyflyte")
+        if not _os.path.isfile(_pyflyte):
+            _pyflyte = "pyflyte"
+        cmd = [_pyflyte, "run", tmp_path, wf_name]
+        for k, v in params.items():
+            cmd += ["--%s" % k, v]
+
+        env = {**os.environ, "METAFLOW_FLYTE_LOCAL_RUN_ID": run_id}
+        obj.echo("Triggering (local): %s" % " ".join(cmd), bold=True)  # type: ignore[attr-defined]
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise FlyteException(
+                "pyflyte run failed with exit code %d:\n%s" % (result.returncode, result.stderr)
+            )
 
         obj.echo(  # type: ignore[attr-defined]
             "Triggered Flyte execution (pathspec: *{pathspec}*).".format(pathspec=pathspec),

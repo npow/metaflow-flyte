@@ -1,0 +1,11 @@
+######################################
+# UX Test Config for metaflow-flyte
+######################################
+
+scheduler:
+  scheduler_type: flyte
+
+compute_env:
+  METAFLOW_DEFAULT_METADATA: local
+  METAFLOW_DEFAULT_DATASTORE: local
+  METAFLOW_DEFAULT_ENVIRONMENT: local
