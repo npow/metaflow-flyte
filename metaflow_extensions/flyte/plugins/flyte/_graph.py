@@ -3,6 +3,14 @@
 ``analyze_graph`` is the only public function.  It walks the Metaflow DAG
 and returns a ``FlowSpec`` containing an ordered list of ``StepSpec`` objects
 that ``_codegen.py`` later turns into Python source.
+
+Supported Metaflow graph shapes
+--------------------------------
+- linear          straight sequence of steps
+- split / join    static parallel branches that all execute
+- foreach         dynamic fan-out over an iterable
+- split-switch    conditional branching — exactly one branch executes at runtime
+                  (Metaflow ``self.next({...}, condition=...)``)
 """
 
 from __future__ import annotations
@@ -75,12 +83,6 @@ def _validate(graph: Any, flow: Any) -> None:
             if deco.name == "slurm":
                 raise NotSupportedException(
                     "Step *%s* uses @slurm which is not supported with Flyte." % node.name
-                )
-            if deco.name == "condition":
-                raise NotSupportedException(
-                    "Step *%s* uses @condition which is not supported with Flyte. "
-                    "Conditional branching via @condition produces incorrect generated "
-                    "code and must be removed." % node.name
                 )
             if deco.name == "resources":
                 warnings.warn(
@@ -155,6 +157,24 @@ def _is_split_join(graph: Any, node: Any) -> bool:
     return graph[node.split_parents[-1]].type == "split"
 
 
+def _is_condition_join(graph: Any, node: Any) -> bool:
+    """Return True if *node* is the merge point after a split-switch (conditional).
+
+    Unlike static splits, split-switch nodes do not set ``split_parents`` on
+    their children, so we detect the join by checking whether any of the
+    node's upstream steps feeds from a ``split-switch`` parent.
+    """
+    if node.type != "join":
+        return False
+    for parent_name in node.in_funcs:
+        parent = graph[parent_name]
+        for grandparent_name in parent.in_funcs:
+            grandparent = graph[grandparent_name]
+            if grandparent.type == "split-switch":
+                return True
+    return False
+
+
 def _topological_order(graph: Any) -> list[StepSpec]:
     """BFS from *start* yielding ``StepSpec`` objects in topological order."""
     visited: set[str] = set()
@@ -175,15 +195,33 @@ def _topological_order(graph: Any) -> list[StepSpec]:
 
         visited.add(name)
 
+        # Map Metaflow graph node type to our NodeType enum.
+        # The start step can have type None (plain start), "start", "split", etc.
+        raw_type = node.type
+        if raw_type is None:
+            # Metaflow assigns None to the start node when it has no explicit type
+            raw_type = "start"
+        try:
+            node_type = NodeType(raw_type)
+        except ValueError:
+            # Unknown type — treat as linear so codegen can still proceed
+            node_type = NodeType.LINEAR
+
+        # Collect switch_cases for split-switch steps.
+        raw_switch = getattr(node, "switch_cases", None) or {}
+        switch_cases = tuple(sorted(raw_switch.items()))
+
         spec = StepSpec(
             name=node.name,
-            node_type=NodeType(node.type),
+            node_type=node_type,
             in_funcs=tuple(node.in_funcs),
             out_funcs=tuple(node.out_funcs),
             split_parents=tuple(node.split_parents),
             max_user_code_retries=_max_user_code_retries(node),
             is_foreach_join=_is_foreach_join(graph, node),
             is_split_join=_is_split_join(graph, node),
+            is_condition_join=_is_condition_join(graph, node),
+            switch_cases=switch_cases,
             timeout_seconds=_step_timeout_seconds(node),
             retry_delay_seconds=_step_retry_delay_seconds(node),
             env_vars=_step_env_vars(node),

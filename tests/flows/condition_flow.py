@@ -1,31 +1,39 @@
-"""Flow using @condition decorator — should fail validation."""
-from metaflow import FlowSpec, condition, step
+"""Flow using conditional branching (split-switch) via self.next({...}, condition=...)."""
+from metaflow import FlowSpec, step
 
 
-class ConditionFlow(FlowSpec):
-    """A flow that uses @condition for branching."""
+class ConditionalFlow(FlowSpec):
+    """A flow that uses conditional (split-switch) branching.
+
+    The start step selects exactly one branch at runtime based on
+    ``self.value > 5``.  Only the chosen branch step runs; both branches
+    merge at the ``join`` step.
+    """
 
     @step
     def start(self):
-        self.value = 1
-        self.next(self.a, self.b, condition="self.value > 0")
+        self.value = 10
+        self.next({"high": self.high, "low": self.low}, condition="self.value > 5")
 
-    @condition(lambda self: self.value > 0)
     @step
-    def a(self):
-        self.result = "a"
-        self.next(self.end)
+    def high(self):
+        self.result = "high"
+        self.next(self.join)
 
-    @condition(lambda self: self.value <= 0)
     @step
-    def b(self):
-        self.result = "b"
+    def low(self):
+        self.result = "low"
+        self.next(self.join)
+
+    @step
+    def join(self, inputs):
+        self.final = inputs[0].result
         self.next(self.end)
 
     @step
     def end(self):
-        print(self.result)
+        pass
 
 
 if __name__ == "__main__":
-    ConditionFlow()
+    ConditionalFlow()

@@ -3,6 +3,10 @@
 These types are the internal data model that ``_graph.py`` produces and
 ``_codegen.py`` consumes.  They carry no business logic — they are plain,
 immutable value objects.
+
+``NodeType`` mirrors Metaflow's internal graph-node type strings, including
+``SPLIT_SWITCH`` for conditional branches created with
+``self.next({...}, condition=...)``.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ class NodeType(str, Enum):
     START = "start"
     LINEAR = "linear"
     SPLIT = "split"
+    SPLIT_SWITCH = "split-switch"  # conditional branching via self.next({...}, condition=...)
     JOIN = "join"
     FOREACH = "foreach"
     END = "end"
@@ -32,8 +37,11 @@ class StepSpec:
     out_funcs: tuple[str, ...]      # downstream step names
     split_parents: tuple[str, ...]  # ancestors that opened the current fork
     max_user_code_retries: int = 0
-    is_foreach_join: bool = False   # join that closes a foreach
-    is_split_join: bool = False     # join that closes a static split
+    is_foreach_join: bool = False    # join that closes a foreach
+    is_split_join: bool = False      # join that closes a static split
+    is_condition_join: bool = False  # join that closes a split-switch (conditional)
+    # For split-switch steps: maps case label -> branch step name
+    switch_cases: tuple[tuple[str, str], ...] = ()
     timeout_seconds: int | None = None
     retry_delay_seconds: int | None = None
     env_vars: tuple[tuple[str, str], ...] = ()  # from @environment(vars={...})

@@ -7,7 +7,12 @@ import warnings
 
 import pytest
 
-from metaflow_extensions.flyte.plugins.flyte._graph import _validate
+from metaflow_extensions.flyte.plugins.flyte._graph import (
+    _validate,
+    _is_condition_join,
+    _topological_order,
+)
+from metaflow_extensions.flyte.plugins.flyte._types import NodeType
 from metaflow_extensions.flyte.plugins.flyte.exception import NotSupportedException
 
 
@@ -37,6 +42,7 @@ class _Node:
         self.in_funcs: list[str] = []
         self.out_funcs: list[str] = []
         self.split_parents: list[str] = []
+        self.switch_cases: dict = {}
 
 
 class _Graph:
@@ -69,7 +75,7 @@ class _Flow:
 
 
 # ---------------------------------------------------------------------------
-# Tests for @condition
+# Tests for @condition (split-switch) — now supported, should NOT raise
 # ---------------------------------------------------------------------------
 
 
@@ -78,23 +84,16 @@ class TestConditionValidation:
         node = _Node("start", decos=[deco_name])
         return _Graph([node]), _Flow()
 
-    def test_condition_raises_not_supported(self):
+    def test_condition_decorator_does_not_raise(self):
+        """@condition is now supported — validation must not raise."""
         graph, flow = self._make_graph_with_deco("condition")
-        with pytest.raises(NotSupportedException, match="condition"):
-            _validate(graph, flow)
-
-    def test_condition_error_message_mentions_step(self):
-        node = _Node("my_step", decos=["condition"])
-        graph = _Graph([node])
-        flow = _Flow()
-        with pytest.raises(NotSupportedException, match="my_step"):
-            _validate(graph, flow)
+        # Should not raise NotSupportedException
+        _validate(graph, flow)
 
     def test_no_condition_does_not_raise(self):
         node = _Node("start", decos=["retry"])
         graph = _Graph([node])
         flow = _Flow()
-        # Should not raise
         _validate(graph, flow)
 
     def test_batch_still_raises(self):
@@ -166,3 +165,115 @@ class TestResourcesWarning:
 
         resource_warnings = [w for w in caught if issubclass(w.category, UserWarning) and "resources" in str(w.message).lower()]
         assert len(resource_warnings) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests for _is_condition_join and split-switch graph analysis
+# ---------------------------------------------------------------------------
+
+
+class TestIsConditionJoin:
+    """Tests for the _is_condition_join helper."""
+
+    def _make_switch_graph(self) -> _Graph:
+        """Build a minimal split-switch graph: start --(switch)--> high, low --> join --> end."""
+        start = _Node("start")
+        start.type = "split-switch"
+        start.out_funcs = ["high", "low"]
+        start.switch_cases = {"high": "high", "low": "low"}
+
+        high = _Node("high")
+        high.type = "linear"
+        high.in_funcs = ["start"]
+        high.out_funcs = ["join"]
+
+        low = _Node("low")
+        low.type = "linear"
+        low.in_funcs = ["start"]
+        low.out_funcs = ["join"]
+
+        join = _Node("join")
+        join.type = "join"
+        join.in_funcs = ["high", "low"]
+        join.out_funcs = ["end"]
+
+        end = _Node("end")
+        end.type = "end"
+        end.in_funcs = ["join"]
+
+        return _Graph([start, high, low, join, end])
+
+    def test_join_after_split_switch_is_detected(self):
+        graph = self._make_switch_graph()
+        join_node = graph["join"]
+        assert _is_condition_join(graph, join_node) is True
+
+    def test_non_join_node_is_not_condition_join(self):
+        graph = self._make_switch_graph()
+        assert _is_condition_join(graph, graph["high"]) is False
+        assert _is_condition_join(graph, graph["start"]) is False
+        assert _is_condition_join(graph, graph["end"]) is False
+
+    def test_regular_split_join_is_not_condition_join(self):
+        """A join after a regular split (not split-switch) should return False."""
+        start = _Node("start")
+        start.type = "split"
+        start.out_funcs = ["a", "b"]
+
+        a = _Node("a")
+        a.type = "linear"
+        a.in_funcs = ["start"]
+        a.out_funcs = ["join"]
+
+        b = _Node("b")
+        b.type = "linear"
+        b.in_funcs = ["start"]
+        b.out_funcs = ["join"]
+
+        join = _Node("join")
+        join.type = "join"
+        join.in_funcs = ["a", "b"]
+        join.split_parents = ["start"]
+
+        graph = _Graph([start, a, b, join])
+        assert _is_condition_join(graph, join) is False
+
+    def test_linear_join_with_no_switch_parent_is_false(self):
+        """A join whose parents come from linear nodes is not a condition join."""
+        prev = _Node("prev")
+        prev.type = "linear"
+        prev.out_funcs = ["join"]
+
+        join = _Node("join")
+        join.type = "join"
+        join.in_funcs = ["prev"]
+
+        prev2 = _Node("prev2")
+        prev2.type = "linear"
+        prev2.out_funcs = ["join"]
+        join.in_funcs = ["prev", "prev2"]
+
+        prev.in_funcs = ["start_node"]
+        prev2.in_funcs = ["start_node"]
+
+        start_node = _Node("start_node")
+        start_node.type = "linear"
+        start_node.out_funcs = ["prev", "prev2"]
+
+        graph = _Graph([start_node, prev, prev2, join])
+        assert _is_condition_join(graph, join) is False
+
+
+class TestSplitSwitchNodeType:
+    """Tests for NodeType.SPLIT_SWITCH enum value."""
+
+    def test_split_switch_enum_value(self):
+        assert NodeType.SPLIT_SWITCH == "split-switch"
+        assert NodeType("split-switch") == NodeType.SPLIT_SWITCH
+
+    def test_split_switch_is_str(self):
+        assert isinstance(NodeType.SPLIT_SWITCH, str)
+
+    def test_split_switch_distinct_from_split(self):
+        assert NodeType.SPLIT_SWITCH != NodeType.SPLIT
+        assert NodeType.SPLIT_SWITCH != NodeType.JOIN

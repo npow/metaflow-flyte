@@ -281,6 +281,59 @@ class TestCompilation:
         combined = result.stdout + result.stderr
         assert "resources" in combined.lower() or out.exists()
 
+    def test_create_conditional_flow(self, tmp_path):
+        """Conditional (split-switch) flow should compile without error."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_flow.py", out)
+        content = _read_generated(out)
+        # Split-switch step: returns JSON with branch_taken
+        assert "_step_start" in content
+        # Dynamic router for the split-switch
+        assert "_cond_start_router" in content
+        assert "@dynamic" in content
+        # Branch tasks
+        assert "_step_high" in content
+        assert "_step_low" in content
+        # Join receives JSON from router
+        assert "_branch_result_json" in content
+        assert "branch_step" in content
+
+    def test_conditional_flow_is_importable(self, tmp_path):
+        """Generated conditional workflow file must be syntactically valid Python."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_flow.py", out)
+        result = subprocess.run(
+            [sys.executable, "-c", "import py_compile; py_compile.compile('%s')" % out],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_conditional_flow_workflow_function_present(self, tmp_path):
+        """The @workflow function for a conditional flow must be emitted."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_flow.py", out)
+        content = _read_generated(out)
+        assert "@workflow" in content
+        assert "def conditional_flow(" in content
+
+    def test_conditional_flow_branch_taken_json(self, tmp_path):
+        """The split-switch task must return JSON with branch_taken key."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_flow.py", out)
+        content = _read_generated(out)
+        assert "branch_taken" in content
+        assert "_read_condition_branch" in content
+
+    def test_conditional_flow_router_has_all_branches(self, tmp_path):
+        """The dynamic router must contain if/elif cases for each branch."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_flow.py", out)
+        content = _read_generated(out)
+        # Both branch cases must appear in the router
+        assert "'high'" in content
+        assert "'low'" in content
+
 
 # ---------------------------------------------------------------------------
 # Tier 2: Local execution (pyflyte run without cluster)
@@ -412,6 +465,25 @@ class TestArtifactFlow:
 
 
 @pytest.mark.integration
+class TestConditionalFlow:
+    def test_conditional_flow_completes(self, tmp_path):
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_flow.py", out)
+        _run_locally(out, "conditional_flow")
+        run = _latest_run("ConditionalFlow")
+        assert run is not None
+
+    def test_conditional_flow_correct_branch_ran(self, tmp_path):
+        """value=10 > 5, so the 'high' branch should execute."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_flow.py", out)
+        _run_locally(out, "conditional_flow")
+        run = _latest_run("ConditionalFlow")
+        # The 'high' branch sets result = "high"
+        assert run["join"].task.data.final == "high"
+
+
+@pytest.mark.integration
 class TestConfigFlow:
     def test_config_defaults(self, tmp_path):
         out = tmp_path / "workflow.py"
@@ -460,4 +532,25 @@ class TestE2ECluster:
         )
         assert result.returncode == 0, (
             "Remote run failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
+        )
+
+    def test_conditional_flow_remote(self, tmp_path):
+        out = tmp_path / "workflow.py"
+        _compile(
+            FLOWS_DIR / "condition_flow.py", out,
+            ["--image", os.environ.get("FLYTE_TEST_IMAGE", "python:3.11-slim")],
+        )
+        result = subprocess.run(
+            [
+                "pyflyte", "run", "--remote",
+                "--project", "flytesnacks",
+                "--domain", "development",
+                str(out), "conditional_flow",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert result.returncode == 0, (
+            "Remote conditional run failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
         )
