@@ -59,6 +59,8 @@ def analyze_graph(
 
 def _validate(graph: Any, flow: Any) -> None:
     """Raise NotSupportedException for features incompatible with Flyte."""
+    import warnings
+
     for node in graph:
         if node.parallel_foreach:
             raise NotSupportedException(
@@ -73,6 +75,20 @@ def _validate(graph: Any, flow: Any) -> None:
             if deco.name == "slurm":
                 raise NotSupportedException(
                     "Step *%s* uses @slurm which is not supported with Flyte." % node.name
+                )
+            if deco.name == "condition":
+                raise NotSupportedException(
+                    "Step *%s* uses @condition which is not supported with Flyte. "
+                    "Conditional branching via @condition produces incorrect generated "
+                    "code and must be removed." % node.name
+                )
+            if deco.name == "resources":
+                warnings.warn(
+                    "Step *%s* uses @resources. Resource requirements are not enforced "
+                    "by this integration — configure matching resources on your Flyte "
+                    "task/workflow directly." % node.name,
+                    UserWarning,
+                    stacklevel=2,
                 )
 
     for bad_deco in ("trigger", "trigger_on_finish", "exit_hook"):

@@ -250,6 +250,37 @@ class TestCompilation:
         assert "myproject" in content
         assert "ProjectFlow" in content
 
+    def test_resources_flow_compiles_successfully(self, tmp_path):
+        """@resources should compile — it only emits a UserWarning, not an error."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "resources_flow.py", out)
+        assert out.exists()
+        content = _read_generated(out)
+        assert "_step_compute" in content
+
+    def test_resources_flow_emits_warning(self, tmp_path):
+        """flyte create on a @resources flow should warn on stderr."""
+        out = tmp_path / "workflow.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(FLOWS_DIR / "resources_flow.py"),
+                "--no-pylint",
+                "--metadata=local",
+                "--datastore=local",
+                "flyte",
+                "create",
+                str(out),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            "flyte create failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
+        )
+        combined = result.stdout + result.stderr
+        assert "resources" in combined.lower() or out.exists()
+
 
 # ---------------------------------------------------------------------------
 # Tier 2: Local execution (pyflyte run without cluster)

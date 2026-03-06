@@ -218,6 +218,14 @@ def run(
     help="Flyte Admin endpoint (host:port).",
 )
 @click.option("--insecure", is_flag=True, default=False, help="Use insecure gRPC (no TLS).")
+@click.option(
+    "--branch", default=None, help="@project branch name (for project flows).",
+)
+@click.option("--production", is_flag=True, default=False, help="Deploy to the production branch.")
+@click.option(
+    "--deployer-attribute-file", default=None, hidden=True,
+    help="Write deployment info JSON here (used by Metaflow Deployer API).",
+)
 @click.pass_obj
 def register(
     obj: object,
@@ -232,13 +240,19 @@ def register(
     max_parallelism: int | None,
     host: str,
     insecure: bool,
+    branch: str | None,
+    production: bool,
+    deployer_attribute_file: str | None,
 ) -> None:
+    import json
+
     if os.path.abspath(sys.argv[0]) == os.path.abspath(output_file):
         raise MetaflowException("Output file cannot be the same as the flow file.")
 
     _make_compiler_and_write(
         obj, output_file, tags, user_namespace, with_decorators,
         workflow_timeout, flyte_project, flyte_domain, image, max_parallelism,
+        branch=branch, production=production,
     )
 
     register_cmd = [
@@ -255,14 +269,240 @@ def register(
     if result.returncode != 0:
         raise FlyteException("pyflyte register failed with exit code %d" % result.returncode)
 
+    flow_name = obj.flow.name  # type: ignore[attr-defined]
+    wf_name = _wf_fn(flow_name)
+
+    if deployer_attribute_file:
+        with open(deployer_attribute_file, "w") as f:
+            json.dump(
+                {
+                    "name": wf_name,
+                    "flow_name": flow_name,
+                    "metadata": "{}",
+                },
+                f,
+            )
+
     obj.echo(  # type: ignore[attr-defined]
         "Workflow registered. Run it with:\n"
         "  pyflyte run --remote --project {p} --domain {d} {f} {wf}".format(
             p=flyte_project, d=flyte_domain, f=output_file,
-            wf=_wf_fn(obj.flow.name),  # type: ignore[attr-defined]
+            wf=wf_name,
         ),
         bold=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# flyte deploy  (alias for register, used by the Deployer API)
+# ---------------------------------------------------------------------------
+
+
+@flyte.command(help="Compile and register this flow as a Flyte workflow (Deployer API).")
+@click.argument("output_file", required=True)
+@click.option("--tag", "tags", multiple=True, default=None)
+@click.option("--namespace", "user_namespace", default=None)
+@click.option("--with", "with_decorators", multiple=True, default=None)
+@click.option("--workflow-timeout", default=None, type=int)
+@click.option("--project", "flyte_project", default="flytesnacks", show_default=True)
+@click.option("--domain", "flyte_domain", default="development", show_default=True)
+@click.option("--image", default=None, help="Docker image URI.")
+@click.option("--max-parallelism", default=None, type=int)
+@click.option(
+    "--host",
+    default="localhost:30080",
+    show_default=True,
+    help="Flyte Admin endpoint (host:port).",
+)
+@click.option("--insecure", is_flag=True, default=False, help="Use insecure gRPC (no TLS).")
+@click.option("--branch", default=None)
+@click.option("--production", is_flag=True, default=False)
+@click.option(
+    "--deployer-attribute-file", default=None, hidden=True,
+    help="Write deployment info JSON here (used by Metaflow Deployer API).",
+)
+@click.pass_obj
+def deploy(
+    obj: object,
+    output_file: str,
+    tags: tuple[str, ...],
+    user_namespace: str | None,
+    with_decorators: tuple[str, ...],
+    workflow_timeout: int | None,
+    flyte_project: str,
+    flyte_domain: str,
+    image: str | None,
+    max_parallelism: int | None,
+    host: str,
+    insecure: bool,
+    branch: str | None,
+    production: bool,
+    deployer_attribute_file: str | None,
+) -> None:
+    import json
+
+    if os.path.abspath(sys.argv[0]) == os.path.abspath(output_file):
+        raise MetaflowException("Output file cannot be the same as the flow file.")
+
+    _make_compiler_and_write(
+        obj, output_file, tags, user_namespace, with_decorators,
+        workflow_timeout, flyte_project, flyte_domain, image, max_parallelism,
+        branch=branch, production=production,
+    )
+
+    if image:
+        register_cmd = [
+            "pyflyte", "register",
+            "--project", flyte_project,
+            "--domain", flyte_domain,
+        ]
+        if insecure:
+            register_cmd.append("--insecure")
+        register_cmd.append(output_file)
+
+        obj.echo("Registering: %s" % " ".join(register_cmd), bold=True)  # type: ignore[attr-defined]
+        result = subprocess.run(register_cmd)
+        if result.returncode != 0:
+            raise FlyteException("pyflyte register failed with exit code %d" % result.returncode)
+
+    flow_name = obj.flow.name  # type: ignore[attr-defined]
+    wf_name = _wf_fn(flow_name)
+
+    if deployer_attribute_file:
+        with open(deployer_attribute_file, "w") as f:
+            json.dump(
+                {
+                    "name": wf_name,
+                    "flow_name": flow_name,
+                    "metadata": "{}",
+                },
+                f,
+            )
+
+    obj.echo(  # type: ignore[attr-defined]
+        "Flyte workflow file written to *{out}* and registered.\n"
+        "Trigger a run: python {flow} flyte trigger".format(
+            out=output_file,
+            flow=sys.argv[0],
+        ),
+        bold=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# flyte trigger
+# ---------------------------------------------------------------------------
+
+
+@flyte.command(help="Trigger a Flyte workflow execution via pyflyte run --remote.")
+@click.option("--tag", "tags", multiple=True, default=None)
+@click.option("--namespace", "user_namespace", default=None)
+@click.option("--with", "with_decorators", multiple=True, default=None)
+@click.option("--workflow-timeout", default=None, type=int)
+@click.option("--project", "flyte_project", default="flytesnacks", show_default=True)
+@click.option("--domain", "flyte_domain", default="development", show_default=True)
+@click.option("--image", default=None, help="Docker image URI.")
+@click.option("--max-parallelism", default=None, type=int)
+@click.option("--branch", default=None)
+@click.option("--production", is_flag=True, default=False)
+@click.option(
+    "--deployer-attribute-file", default=None, hidden=True,
+    help="Write triggered-run info JSON here (used by Metaflow Deployer API).",
+)
+@click.option(
+    "--run-param",
+    "run_params",
+    multiple=True,
+    default=None,
+    help="Flow parameter as key=value (repeatable).",
+)
+@click.pass_obj
+def trigger(
+    obj: object,
+    tags: tuple[str, ...],
+    user_namespace: str | None,
+    with_decorators: tuple[str, ...],
+    workflow_timeout: int | None,
+    flyte_project: str,
+    flyte_domain: str,
+    image: str | None,
+    max_parallelism: int | None,
+    branch: str | None,
+    production: bool,
+    deployer_attribute_file: str | None,
+    run_params: tuple[str, ...],
+) -> None:
+    import json
+    import tempfile
+    import uuid
+
+    # Parse run_params into CLI args for pyflyte run.
+    params: dict[str, str] = {}
+    for kv in run_params:
+        k, _, v = kv.partition("=")
+        params[k.strip()] = v.strip()
+
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tmp:
+        tmp_path = tmp.name
+
+    try:
+        _make_compiler_and_write(
+            obj, tmp_path, tags, user_namespace, with_decorators,
+            workflow_timeout, flyte_project, flyte_domain, image, max_parallelism,
+            branch=branch, production=production,
+        )
+
+        flow_name = obj.flow.name  # type: ignore[attr-defined]
+        wf_name = _wf_fn(flow_name)
+
+        cmd = [
+            "pyflyte", "run", "--remote",
+            "--project", flyte_project,
+            "--domain", flyte_domain,
+            tmp_path, wf_name,
+        ]
+        for k, v in params.items():
+            cmd += ["--%s" % k, v]
+
+        obj.echo("Triggering: %s" % " ".join(cmd), bold=True)  # type: ignore[attr-defined]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise FlyteException(
+                "pyflyte run failed with exit code %d:\n%s" % (result.returncode, result.stderr)
+            )
+
+        # Attempt to extract a Flyte execution ID from pyflyte output.
+        execution_id = uuid.uuid4().hex[:12]
+        for line in (result.stdout + result.stderr).splitlines():
+            if "execution" in line.lower() and "id" in line.lower():
+                parts = line.split()
+                if parts:
+                    execution_id = parts[-1].strip().strip("'\"")
+                    break
+
+        run_id = "flyte-%s" % execution_id
+        pathspec = "%s/%s" % (flow_name, run_id)
+
+        if deployer_attribute_file:
+            with open(deployer_attribute_file, "w") as f:
+                json.dump(
+                    {
+                        "pathspec": pathspec,
+                        "name": wf_name,
+                        "metadata": "{}",
+                    },
+                    f,
+                )
+
+        obj.echo(  # type: ignore[attr-defined]
+            "Triggered Flyte execution (pathspec: *{pathspec}*).".format(pathspec=pathspec),
+            bold=True,
+        )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------

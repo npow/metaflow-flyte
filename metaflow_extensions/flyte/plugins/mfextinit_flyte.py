@@ -14,3 +14,7 @@ CLIS_DESC = [
 STEP_DECORATORS_DESC = [
     ("flyte_internal", ".flyte.flyte_decorator.FlyteInternalDecorator"),
 ]
+
+DEPLOYER_IMPL_PROVIDERS_DESC = [
+    ("flyte", ".flyte.flyte_deployer.FlyteDeployer"),
+]
