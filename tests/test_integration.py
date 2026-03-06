@@ -30,7 +30,7 @@ FLOWS_DIR = Path(__file__).parent / "flows"
 # ---------------------------------------------------------------------------
 
 
-def _compile(flow_path: Path, out_path: Path, extra_args: list[str] = ()) -> None:
+def _compile(flow_path: Path, out_path: Path, extra_args: list[str] = (), datastore: str = "local") -> None:
     """Run ``python <flow> flyte create <out>`` and assert success."""
     result = subprocess.run(
         [
@@ -38,7 +38,7 @@ def _compile(flow_path: Path, out_path: Path, extra_args: list[str] = ()) -> Non
             str(flow_path),
             "--no-pylint",
             "--metadata=local",
-            "--datastore=local",
+            f"--datastore={datastore}",
             "flyte",
             "create",
             str(out_path),
@@ -518,6 +518,7 @@ class TestE2ECluster:
         _compile(
             FLOWS_DIR / "linear_flow.py", out,
             ["--image", os.environ.get("FLYTE_TEST_IMAGE", "python:3.11-slim")],
+            datastore="s3",
         )
         result = subprocess.run(
             [
@@ -539,6 +540,7 @@ class TestE2ECluster:
         _compile(
             FLOWS_DIR / "condition_flow.py", out,
             ["--image", os.environ.get("FLYTE_TEST_IMAGE", "python:3.11-slim")],
+            datastore="s3",
         )
         result = subprocess.run(
             [
