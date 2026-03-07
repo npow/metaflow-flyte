@@ -163,18 +163,16 @@ def _is_condition_join(graph: Any, node: Any) -> bool:
     """Return True if *node* is the merge point after a split-switch (conditional).
 
     A condition-join step has multiple in_funcs that all originate from a
-    split-switch parent. The step may have type "join" (if defined with an
-    ``inputs`` parameter) or "linear" (if defined without one).
+    split-switch parent. The step may be type "join" (defined with ``inputs``)
+    or "linear" (defined without it) — both are valid.
     """
     if len(node.in_funcs) < 2:
         return False
-    for parent_name in node.in_funcs:
-        parent = graph[parent_name]
-        for grandparent_name in parent.in_funcs:
-            grandparent = graph[grandparent_name]
-            if grandparent.type == "split-switch":
-                return True
-    return False
+    return any(
+        graph[grandparent].type == "split-switch"
+        for parent in node.in_funcs
+        for grandparent in graph[parent].in_funcs
+    )
 
 
 def _topological_order(graph: Any) -> list[StepSpec]:

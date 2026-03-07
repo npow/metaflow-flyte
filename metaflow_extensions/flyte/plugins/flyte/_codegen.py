@@ -241,9 +241,17 @@ def _emit_helpers(cb: _CB, cfg: FlyteFlowConfig) -> None:
     cb.indent()
     cb.emit("proc.send_signal(sig)")
     cb.dedent()
-    cb.emit("signal.signal(signal.SIGTERM, _forward)")
-    cb.emit("signal.signal(signal.SIGINT, _forward)")
+    cb.emit("_prev_term = signal.signal(signal.SIGTERM, _forward)")
+    cb.emit("_prev_int  = signal.signal(signal.SIGINT,  _forward)")
+    cb.emit("try:")
+    cb.indent()
     cb.emit("proc.wait()")
+    cb.dedent()
+    cb.emit("finally:")
+    cb.indent()
+    cb.emit("signal.signal(signal.SIGTERM, _prev_term)")
+    cb.emit("signal.signal(signal.SIGINT,  _prev_int)")
+    cb.dedent()
     cb.emit("if proc.returncode != 0:")
     cb.indent()
     cb.emit("raise subprocess.CalledProcessError(proc.returncode, cmd)")
@@ -743,14 +751,9 @@ def _emit_workflow(
     condition_branches: dict[str, frozenset[str]],
     condition_branch_set: set[str],
 ) -> None:
-    # Build workflow signature from flow parameters
     sig = _workflow_signature(spec.parameters)
-    # Always include origin_run_id so callers can resume a prior Metaflow run
-    resume_param = "origin_run_id: str = ''"
-    full_sig = (sig + ", " + resume_param) if sig else resume_param
-
     cb.emit("@workflow")
-    cb.emit("def %s(%s) -> None:" % (_wf_fn(spec.name), full_sig))
+    cb.emit("def %s(%s) -> None:" % (_wf_fn(spec.name), sig))
     cb.indent()
     if spec.description:
         cb.emit("%r" % spec.description)
@@ -906,7 +909,11 @@ def _wf_fn(flow_name: str) -> str:
 
 
 def _workflow_signature(params: Sequence[ParameterSpec]) -> str:
-    """Build the Python function parameter string from flow parameters."""
+    """Build the Python function parameter string from flow parameters.
+
+    Always appends ``origin_run_id: str = ''`` so callers can resume a prior
+    Metaflow run by passing the original run_id (e.g. via Flyte ``--recover``).
+    """
     parts: list[str] = []
     for p in params:
         if isinstance(p.default, str):
@@ -919,6 +926,7 @@ def _workflow_signature(params: Sequence[ParameterSpec]) -> str:
             parts.append("%s: float = %r" % (p.name, p.default))
         else:
             parts.append("%s: str = %r" % (p.name, str(p.default) if p.default is not None else ""))
+    parts.append("origin_run_id: str = ''")
     return ", ".join(parts)
 
 
