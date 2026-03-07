@@ -35,8 +35,8 @@ jobs:
       # TODO: add flytectl demo start + image build for deployer-mode tests.
 
       - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
-          metaflow-ref: npow/corral-devstack
         with:
+          metaflow-ref: npow/corral-devstack
           extra-install: "."
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           pytest-args: "-n 4 -v --tb=short --timeout=1800 --exec-mode runner"
