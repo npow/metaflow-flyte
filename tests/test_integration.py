@@ -41,7 +41,7 @@ def _compile(flow_path: Path, out_path: Path, extra_args: list[str] = (), datast
             f"--datastore={datastore}",
             "flyte",
             "create",
-            str(out_path),
+            "--output-file", str(out_path),
         ]
         + list(extra_args),
         capture_output=True,
@@ -270,7 +270,7 @@ class TestCompilation:
                 "--datastore=local",
                 "flyte",
                 "create",
-                str(out),
+                "--output-file", str(out),
             ],
             capture_output=True,
             text=True,

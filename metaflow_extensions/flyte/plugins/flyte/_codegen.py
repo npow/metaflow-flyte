@@ -149,6 +149,7 @@ def _emit_header(cb: _CB, spec: FlowSpec, cfg: FlyteFlowConfig) -> None:
     cb.emit()
     cb.emit("import json")
     cb.emit("import os")
+    cb.emit("import signal")
     cb.emit("import subprocess")
     cb.emit("import sys")
     cb.emit("import tempfile")
@@ -235,7 +236,18 @@ def _emit_helpers(cb: _CB, cfg: FlyteFlowConfig) -> None:
     cb.indent()
     cb.emit("env.update(extra_env)")
     cb.dedent()
-    cb.emit("subprocess.run(cmd, env=env, check=True)")
+    cb.emit("proc = subprocess.Popen(cmd, env=env)")
+    cb.emit("def _forward(sig, _frame):")
+    cb.indent()
+    cb.emit("proc.send_signal(sig)")
+    cb.dedent()
+    cb.emit("signal.signal(signal.SIGTERM, _forward)")
+    cb.emit("signal.signal(signal.SIGINT, _forward)")
+    cb.emit("proc.wait()")
+    cb.emit("if proc.returncode != 0:")
+    cb.indent()
+    cb.emit("raise subprocess.CalledProcessError(proc.returncode, cmd)")
+    cb.dedent()
     cb.dedent()
     cb.emit()
     cb.emit()
@@ -400,8 +412,14 @@ def _emit_run_id_task(cb: _CB) -> None:
     cb.emit()
     cb.emit()
     cb.emit("@_mf_task()")
-    cb.emit("def _mf_generate_run_id() -> str:")
+    cb.emit("def _mf_generate_run_id(origin_run_id: str = '') -> str:")
     cb.indent()
+    cb.emit("# If a prior run_id is supplied (e.g. via Flyte --recover), reuse it so")
+    cb.emit("# Metaflow treats this execution as a resume of the original run.")
+    cb.emit("if origin_run_id:")
+    cb.indent()
+    cb.emit("return origin_run_id")
+    cb.dedent()
     cb.emit("try:")
     cb.indent()
     cb.emit("ctx = current_context()")
@@ -590,6 +608,10 @@ def _emit_task(
         # Return JSON so the dynamic router knows which branch to execute
         cb.emit("_branch_taken: str = _read_condition_branch(run_id, %r, task_id)" % step.name)
         cb.emit("return json.dumps({'task_id': task_id, 'branch_taken': _branch_taken})")
+    elif is_condition_branch:
+        # Return JSON with branch identity so the join step can build input_paths.
+        # The router returns this Promise[str] directly (avoids Promise serialization).
+        cb.emit("return json.dumps({'branch_step': %r, 'task_id': task_id})" % step.name)
     else:
         cb.emit("return task_id")
 
@@ -619,9 +641,7 @@ def _emit_start_init(cb: _CB, spec: FlowSpec) -> None:
     if spec.parameters:
         for p in spec.parameters:
             cb.emit('_init_cmd += ["--%s", str(_param_%s)]' % (p.name, p.name))
-    cb.emit("_init_env: dict[str, str] = os.environ.copy()")
-    cb.emit("_init_env.setdefault('METAFLOW_DATASTORE_SYSROOT_LOCAL', os.path.expanduser('~'))")
-    cb.emit("subprocess.run(_init_cmd, env=_init_env, check=True)")
+    cb.emit("_run_cmd(_init_cmd)")
 
 
 # ---------------------------------------------------------------------------
@@ -684,11 +704,13 @@ def _emit_condition_dynamic(
         keyword = "if" if first else "elif"
         cb.emit("%s _branch_taken == %r:" % (keyword, branch_name))
         cb.indent()
+        # Return the Promise[str] directly — branch tasks now return the full JSON
+        # {'branch_step': ..., 'task_id': ...}, so the join step can parse it.
+        # We cannot json.dumps() a Promise inside a @dynamic function.
         cb.emit(
-            "_branch_tid = %s(run_id=run_id, prev_task_id=_switch_task_id)"
+            "return %s(run_id=run_id, prev_task_id=_switch_task_id)"
             % _task_fn(branch_name)
         )
-        cb.emit("return json.dumps({'branch_step': %r, 'task_id': _branch_tid})" % branch_name)
         cb.dedent()
         first = False
 
@@ -697,10 +719,9 @@ def _emit_condition_dynamic(
         cb.emit("else:")
         cb.indent()
         cb.emit(
-            "_branch_tid = %s(run_id=run_id, prev_task_id=_switch_task_id)"
+            "return %s(run_id=run_id, prev_task_id=_switch_task_id)"
             % _task_fn(branch_step_names[0])
         )
-        cb.emit("return json.dumps({'branch_step': %r, 'task_id': _branch_tid})" % branch_step_names[0])
         cb.dedent()
     else:
         cb.emit("return json.dumps({'branch_step': '', 'task_id': _switch_task_id})")
@@ -724,15 +745,18 @@ def _emit_workflow(
 ) -> None:
     # Build workflow signature from flow parameters
     sig = _workflow_signature(spec.parameters)
+    # Always include origin_run_id so callers can resume a prior Metaflow run
+    resume_param = "origin_run_id: str = ''"
+    full_sig = (sig + ", " + resume_param) if sig else resume_param
 
     cb.emit("@workflow")
-    cb.emit("def %s(%s) -> None:" % (_wf_fn(spec.name), sig))
+    cb.emit("def %s(%s) -> None:" % (_wf_fn(spec.name), full_sig))
     cb.indent()
     if spec.description:
         cb.emit("%r" % spec.description)
 
-    # First task: generate the Metaflow run_id from the Flyte execution ID
-    cb.emit("run_id = _mf_generate_run_id()")
+    # First task: generate (or reuse) the Metaflow run_id
+    cb.emit("run_id = _mf_generate_run_id(origin_run_id=origin_run_id)")
 
     task_id_vars: dict[str, str] = {}  # step_name -> Python variable holding task_id
 

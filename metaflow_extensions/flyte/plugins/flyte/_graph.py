@@ -99,8 +99,10 @@ def _validate(graph: Any, flow: Any) -> None:
         except Exception:
             decos = None
         if decos:
-            raise NotSupportedException(
-                "@%s is not supported with Flyte deployments." % bad_deco
+            warnings.warn(
+                "@%s is not supported by this integration and will be ignored." % bad_deco,
+                UserWarning,
+                stacklevel=2,
             )
 
 
@@ -160,11 +162,11 @@ def _is_split_join(graph: Any, node: Any) -> bool:
 def _is_condition_join(graph: Any, node: Any) -> bool:
     """Return True if *node* is the merge point after a split-switch (conditional).
 
-    Unlike static splits, split-switch nodes do not set ``split_parents`` on
-    their children, so we detect the join by checking whether any of the
-    node's upstream steps feeds from a ``split-switch`` parent.
+    A condition-join step has multiple in_funcs that all originate from a
+    split-switch parent. The step may have type "join" (if defined with an
+    ``inputs`` parameter) or "linear" (if defined without one).
     """
-    if node.type != "join":
+    if len(node.in_funcs) < 2:
         return False
     for parent_name in node.in_funcs:
         parent = graph[parent_name]

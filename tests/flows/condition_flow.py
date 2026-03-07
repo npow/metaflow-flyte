@@ -13,7 +13,8 @@ class ConditionalFlow(FlowSpec):
     @step
     def start(self):
         self.value = 10
-        self.next({"high": self.high, "low": self.low}, condition="self.value > 5")
+        self.branch = "high" if self.value > 5 else "low"
+        self.next({"high": self.high, "low": self.low}, condition="branch")
 
     @step
     def high(self):
@@ -26,8 +27,8 @@ class ConditionalFlow(FlowSpec):
         self.next(self.join)
 
     @step
-    def join(self, inputs):
-        self.final = inputs[0].result
+    def join(self):
+        self.final = self.result
         self.next(self.end)
 
     @step
