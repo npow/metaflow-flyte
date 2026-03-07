@@ -1,6 +1,7 @@
 # metaflow-flyte
 
 [![CI](https://github.com/npow/metaflow-flyte/actions/workflows/ci.yml/badge.svg)](https://github.com/npow/metaflow-flyte/actions/workflows/ci.yml)
+[![E2E](https://github.com/npow/metaflow-flyte/actions/workflows/e2e.yml/badge.svg)](https://github.com/npow/metaflow-flyte/actions/workflows/e2e.yml)
 [![PyPI](https://img.shields.io/pypi/v/metaflow-flyte)](https://pypi.org/project/metaflow-flyte/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -251,14 +252,38 @@ pytest tests/ -m "not integration and not e2e"
 # Compilation + local pyflyte run (~3 min)
 pytest tests/ -m "not e2e"
 
-# E2e (requires a running Flyte cluster)
-pytest tests/ -m "e2e"
+# E2e against a real Flyte cluster (see below)
+pytest tests/test_e2e_remote.py -v --timeout=300
 ```
 
 The test suite covers three tiers:
 - **Tier 1**: compile all graph shapes → assert generated file content
-- **Tier 2**: `pyflyte run` locally → verify Metaflow artifacts written to disk
-- **Tier 3**: register + run on a live Flyte cluster → verify S3 artifacts and deck output
+- **Tier 2**: `pyflyte run` locally (in-process) → verify Metaflow artifacts written to disk
+- **Tier 3**: `pyflyte run --remote` against a live cluster → real Flyte task pods, real S3 artifacts
+
+**Running Tier 3 locally:**
+
+```bash
+# Start a local Flyte sandbox
+flytectl demo start
+
+# Build and tag the task container image
+docker build -f Dockerfile.e2e -t localhost:30000/metaflow-flyte-e2e:dev .
+docker push localhost:30000/metaflow-flyte-e2e:dev
+
+# Copy flows to the stable container path and run
+sudo mkdir -p /app/tests/flows && sudo cp tests/flows/*.py /app/tests/flows/
+
+E2E_FLOWS_DIR=/app/tests/flows \
+FLYTE_TEST_IMAGE=localhost:30000/metaflow-flyte-e2e:dev \
+METAFLOW_DEFAULT_DATASTORE=s3 \
+METAFLOW_DATASTORE_SYSROOT_S3=s3://my-s3-bucket/metaflow/ \
+METAFLOW_S3_ENDPOINT_URL=http://localhost:30002 \
+AWS_ACCESS_KEY_ID=minio AWS_SECRET_ACCESS_KEY=miniostorage AWS_DEFAULT_REGION=us-east-1 \
+pytest tests/test_e2e_remote.py -v --timeout=300
+```
+
+Tier 3 also runs automatically on every push to `main` via the [E2E workflow](.github/workflows/e2e.yml).
 
 ## License
 
