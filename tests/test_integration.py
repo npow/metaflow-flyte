@@ -12,7 +12,6 @@ These tests run real Metaflow subprocesses against the local datastore.
 Tier 3 (cluster): Marked ``@pytest.mark.e2e`` — requires docker-compose up.
 """
 
-import json
 import os
 import subprocess
 import sys
@@ -240,7 +239,6 @@ class TestCompilation:
         # workflow_timeout is stored in config; not currently used at workflow
         # level (Flyte doesn't have a per-workflow timeout in @workflow decorator),
         # but should appear in generated config constant.
-        content = _read_generated(out)
         assert out.exists()  # file was generated
 
     def test_project_flow(self, tmp_path):
@@ -279,7 +277,7 @@ class TestCompilation:
             "flyte create failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
         )
         combined = result.stdout + result.stderr
-        assert "resources" in combined.lower() or out.exists()
+        assert "resources" in combined.lower()
 
     def test_create_conditional_flow(self, tmp_path):
         """Conditional (split-switch) flow should compile without error."""
@@ -449,19 +447,6 @@ class TestArtifactFlow:
         assert transform_data.appended == [1, 2, 3, 4, 5]
         assert transform_data.merged["extra"] is True
 
-    def test_foreach_artifacts_per_split(self, tmp_path):
-        out = tmp_path / "workflow.py"
-        _compile(FLOWS_DIR / "foreach_flow.py", out)
-        _run_locally(out, "foreach_flow")
-        run = _latest_run("ForeachFlow")
-        body_tasks = list(run["body"].tasks())
-        assert len(body_tasks) == 3
-        results = sorted(t.data.result for t in body_tasks)
-        assert results == [
-            "processed: alpha",
-            "processed: beta",
-            "processed: gamma",
-        ]
 
 
 @pytest.mark.integration

@@ -1,10 +1,8 @@
 """pytest configuration for metaflow-flyte tests."""
 
-import os
 import sys
 from pathlib import Path
 
-import pytest
 
 # Ensure the package root is importable when running tests directly.
 sys.path.insert(0, str(Path(__file__).parent.parent))

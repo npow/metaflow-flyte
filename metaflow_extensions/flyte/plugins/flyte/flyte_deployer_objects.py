@@ -9,8 +9,7 @@ from metaflow.runner.deployer import DeployedFlow, TriggeredRun
 from metaflow.runner.utils import get_lower_level_group, handle_timeout, temporary_fifo
 
 if TYPE_CHECKING:
-    import metaflow
-    import metaflow.runner.deployer_impl
+    pass
 
 
 class FlyteTriggeredRun(TriggeredRun):

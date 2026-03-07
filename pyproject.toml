@@ -1,6 +1,6 @@
 [project]
 name = "metaflow-flyte"
-version = "0.3.2"
+version = "0.4.0"
 description = "Run Metaflow flows as Flyte workflows"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -28,7 +28,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
+    "pytest-cov>=4.0",
     "pytest-timeout>=2.0",
+    "ruff>=0.4",
 ]
 
 [project.urls]
@@ -47,4 +49,25 @@ testpaths = ["tests"]
 markers = [
     "integration: local execution tests using pyflyte run (no cluster required)",
     "e2e: requires a running Flyte cluster (docker-compose)",
+]
+addopts = "--cov=metaflow_extensions --cov-report=term-missing --cov-report=xml --cov-report=html"
+
+[tool.coverage.run]
+source = ["metaflow_extensions"]
+omit = ["*/mfextinit_*.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 80
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "W", "B"]
+ignore = [
+    "E501",   # line too long — generated code has long lines
+    "B008",   # do not perform function calls in default arguments
 ]

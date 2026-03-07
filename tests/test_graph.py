@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import types
 import warnings
 
 import pytest
@@ -10,7 +9,6 @@ import pytest
 from metaflow_extensions.flyte.plugins.flyte._graph import (
     _validate,
     _is_condition_join,
-    _topological_order,
 )
 from metaflow_extensions.flyte.plugins.flyte._types import NodeType
 from metaflow_extensions.flyte.plugins.flyte.exception import NotSupportedException
