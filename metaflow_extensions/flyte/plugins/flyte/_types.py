@@ -44,6 +44,9 @@ class StepSpec:
     switch_cases: tuple[tuple[str, str], ...] = ()
     timeout_seconds: int | None = None
     env_vars: tuple[tuple[str, str], ...] = ()  # from @environment(vars={...})
+    resource_cpu: int | None = None    # from @resources(cpu=N)
+    resource_gpu: int | None = None    # from @resources(gpu=N)
+    resource_memory: int | None = None  # from @resources(memory=N) in MB
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,21 @@ class ParameterSpec:
     default: object
     description: str = ""
     type_name: str = "str"  # Python type name: str, int, float, bool
+
+
+@dataclass(frozen=True)
+class TriggerSpec:
+    """A custom-event trigger from @trigger(event=...)."""
+
+    event_name: str
+    parameter_map: tuple[tuple[str, str], ...] = ()  # (flow_param, event_field) pairs
+
+
+@dataclass(frozen=True)
+class TriggerOnFinishSpec:
+    """A flow-completion trigger from @trigger_on_finish(flow=...)."""
+
+    flow_name: str  # upstream Metaflow flow name whose completion triggers this flow
 
 
 @dataclass(frozen=True)
@@ -68,6 +86,8 @@ class FlowSpec:
     tags: tuple[str, ...] = ()
     namespace: str | None = None
     project_name: str | None = None
+    triggers: tuple[TriggerSpec, ...] = ()           # from @trigger
+    trigger_on_finishes: tuple[TriggerOnFinishSpec, ...] = ()  # from @trigger_on_finish
 
 
 @dataclass(frozen=True)

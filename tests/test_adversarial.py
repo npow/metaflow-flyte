@@ -135,7 +135,8 @@ class TestValidateSlurm:
 
 
 class TestValidateFlowDecos:
-    def test_trigger_emits_warning(self):
+    def test_trigger_does_not_warn(self):
+        """@trigger is now supported — _validate must not emit a warning for it."""
         graph = _Graph([_Node("start")])
 
         class _FakeDeco:
@@ -146,7 +147,7 @@ class TestValidateFlowDecos:
             warnings.simplefilter("always")
             _validate(graph, flow)
         msgs = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
-        assert any("trigger" in m for m in msgs)
+        assert not any("trigger" in m and "ignored" in m for m in msgs)
 
     def test_exit_hook_emits_warning(self):
         graph = _Graph([_Node("start")])

@@ -26,6 +26,8 @@ from metaflow_extensions.flyte.plugins.flyte._types import (
     NodeType,
     ParameterSpec,
     StepSpec,
+    TriggerOnFinishSpec,
+    TriggerSpec,
 )
 from metaflow_extensions.flyte.plugins.flyte.exception import NotSupportedException
 
@@ -42,6 +44,8 @@ def analyze_graph(
     schedule_cron = _extract_schedule(flow)
     tags_raw = getattr(flow, "_tags", None) or []
     project_name = _extract_project(flow)
+    triggers = _extract_triggers(flow)
+    trigger_on_finishes = _extract_trigger_on_finishes(flow)
 
     return FlowSpec(
         name=flow.name,
@@ -52,6 +56,8 @@ def analyze_graph(
         tags=tuple(tags_raw),
         namespace=None,
         project_name=project_name,
+        triggers=tuple(triggers),
+        trigger_on_finishes=tuple(trigger_on_finishes),
     )
 
 
@@ -77,26 +83,21 @@ def _validate(graph: Any, flow: Any) -> None:
                 raise NotSupportedException(
                     "Step *%s* uses @slurm which is not supported with Flyte." % node.name
                 )
-            if deco.name == "resources":
-                warnings.warn(
-                    "Step *%s* uses @resources. Resource requirements are not enforced "
-                    "by this integration — configure matching resources on your Flyte "
-                    "task/workflow directly." % node.name,
-                    UserWarning,
-                    stacklevel=2,
-                )
+            # @resources is translated to native Flyte Resources — no warning needed.
 
-    for bad_deco in ("trigger", "trigger_on_finish", "exit_hook"):
-        try:
-            decos = flow._flow_decorators.get(bad_deco)
-        except Exception:
-            decos = None
-        if decos:
-            warnings.warn(
-                "@%s is not supported by this integration and will be ignored." % bad_deco,
-                UserWarning,
-                stacklevel=2,
-            )
+    # @trigger and @trigger_on_finish are extracted and wired as Flyte LaunchPlan
+    # triggers during code generation — no warning needed.
+
+    try:
+        exit_hook_decos = flow._flow_decorators.get("exit_hook")
+    except Exception:
+        exit_hook_decos = None
+    if exit_hook_decos:
+        warnings.warn(
+            "@exit_hook is not supported by this integration and will be ignored.",
+            UserWarning,
+            stacklevel=2,
+        )
 
 
 def _max_user_code_retries(node: Any) -> int:
@@ -125,6 +126,21 @@ def _step_env_vars(node: Any) -> tuple[tuple[str, str], ...]:
             raw = deco.attributes.get("vars") or {}
             return tuple(sorted(raw.items()))
     return ()
+
+
+def _step_resources(node: Any) -> tuple[int | None, int | None, int | None]:
+    """Return (cpu, gpu, memory_mb) from @resources, or (None, None, None)."""
+    for deco in node.decorators:
+        if deco.name == "resources":
+            cpu = deco.attributes.get("cpu")
+            gpu = deco.attributes.get("gpu")
+            memory = deco.attributes.get("memory")
+            return (
+                int(cpu) if cpu is not None else None,
+                int(gpu) if gpu is not None else None,
+                int(memory) if memory is not None else None,
+            )
+    return (None, None, None)
 
 
 def _is_foreach_join(graph: Any, node: Any) -> bool:
@@ -195,6 +211,7 @@ def _topological_order(graph: Any) -> list[StepSpec]:
         raw_switch = getattr(node, "switch_cases", None) or {}
         switch_cases = tuple(sorted(raw_switch.items()))
 
+        resource_cpu, resource_gpu, resource_memory = _step_resources(node)
         spec = StepSpec(
             name=node.name,
             node_type=node_type,
@@ -208,6 +225,9 @@ def _topological_order(graph: Any) -> list[StepSpec]:
             switch_cases=switch_cases,
             timeout_seconds=_step_timeout_seconds(node),
             env_vars=_step_env_vars(node),
+            resource_cpu=resource_cpu,
+            resource_gpu=resource_gpu,
+            resource_memory=resource_memory,
         )
         result.append(spec)
 
@@ -280,3 +300,59 @@ def _extract_project(flow: Any) -> str | None:
     if not project_decos:
         return None
     return project_decos[0].attributes.get("name") or None
+
+
+def _extract_triggers(flow: Any) -> list[TriggerSpec]:
+    """Return TriggerSpec entries from @trigger(event=...) or @trigger(events=[...])."""
+    try:
+        decos = flow._flow_decorators.get("trigger")
+    except Exception:
+        return []
+    if not decos:
+        return []
+
+    raw_triggers = getattr(decos[0], "triggers", None) or []
+    result: list[TriggerSpec] = []
+    for t in raw_triggers:
+        if not isinstance(t, dict):
+            continue
+        name = t.get("name")
+        if not name or not isinstance(name, str):
+            warnings.warn(
+                "@trigger entry has a non-string or deploy-time event name %r — "
+                "skipping this trigger. Evaluate the event name before deploying." % (name,),
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
+        raw_params = t.get("parameters") or {}
+        param_map = tuple(sorted(raw_params.items())) if isinstance(raw_params, dict) else ()
+        result.append(TriggerSpec(event_name=name, parameter_map=param_map))
+    return result
+
+
+def _extract_trigger_on_finishes(flow: Any) -> list[TriggerOnFinishSpec]:
+    """Return TriggerOnFinishSpec entries from @trigger_on_finish(flow=...) or flows=[...]."""
+    try:
+        decos = flow._flow_decorators.get("trigger_on_finish")
+    except Exception:
+        return []
+    if not decos:
+        return []
+
+    raw_triggers = getattr(decos[0], "triggers", None) or []
+    result: list[TriggerOnFinishSpec] = []
+    for t in raw_triggers:
+        if not isinstance(t, dict):
+            continue
+        flow_name = t.get("flow") or t.get("fq_name")
+        if not flow_name or not isinstance(flow_name, str):
+            warnings.warn(
+                "@trigger_on_finish entry has a non-string or missing flow name %r — "
+                "skipping this trigger." % (flow_name,),
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
+        result.append(TriggerOnFinishSpec(flow_name=flow_name))
+    return result

@@ -507,6 +507,119 @@ def trigger(
 
 
 # ---------------------------------------------------------------------------
+# flyte resume
+# ---------------------------------------------------------------------------
+
+
+@flyte.command(help="Re-run a failed flow, reusing outputs from steps that already succeeded.")
+@click.option(
+    "--run-id",
+    "clone_run_id",
+    required=True,
+    help="Metaflow run ID of the failed run to resume (e.g. flyte-abc123).",
+)
+@click.option("--tag", "tags", multiple=True, default=None)
+@click.option("--namespace", "user_namespace", default=None)
+@click.option("--with", "with_decorators", multiple=True, default=None)
+@click.option("--workflow-timeout", default=None, type=int)
+@click.option("--project", "flyte_project", default="flytesnacks", show_default=True)
+@click.option("--domain", "flyte_domain", default="development", show_default=True)
+@click.option("--image", default=None, help="Docker image URI.")
+@click.option("--max-parallelism", default=None, type=int)
+@click.option("--branch", default=None)
+@click.option("--production", is_flag=True, default=False)
+@click.option(
+    "--deployer-attribute-file", default=None, hidden=True,
+    help="Write resumed-run info JSON here (used by Metaflow Deployer API).",
+)
+@click.option(
+    "--run-param",
+    "run_params",
+    multiple=True,
+    default=None,
+    help="Flow parameter as key=value (repeatable).",
+)
+@click.pass_obj
+def resume(
+    obj: object,
+    clone_run_id: str,
+    tags: tuple[str, ...],
+    user_namespace: str | None,
+    with_decorators: tuple[str, ...],
+    workflow_timeout: int | None,
+    flyte_project: str,
+    flyte_domain: str,
+    image: str | None,
+    max_parallelism: int | None,
+    branch: str | None,
+    production: bool,
+    deployer_attribute_file: str | None,
+    run_params: tuple[str, ...],
+) -> None:
+    """Re-run the flow, passing ``origin_run_id`` so steps whose outputs
+    already exist in the Metaflow datastore are skipped (clone-run-id pattern).
+    """
+    params: dict[str, str] = {}
+    for kv in run_params:
+        k, _, v = kv.partition("=")
+        params[k.strip()] = v.strip()
+
+    flow_name = obj.flow.name  # type: ignore[attr-defined]
+    run_id = "flyte-resume-" + uuid.uuid4().hex[:12]
+    pathspec = "%s/%s" % (flow_name, run_id)
+
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tmp:
+        tmp_path = tmp.name
+
+    try:
+        _make_compiler_and_write(
+            obj, tmp_path, tags, user_namespace, with_decorators,
+            workflow_timeout, flyte_project, flyte_domain, image, max_parallelism,
+            branch=branch, production=production,
+        )
+
+        wf_name = _wf_fn(flow_name)
+
+        if deployer_attribute_file:
+            with open(deployer_attribute_file, "w") as f:
+                json.dump(
+                    {
+                        "pathspec": pathspec,
+                        "name": flow_name,
+                        "metadata": "{}",
+                    },
+                    f,
+                )
+
+        _pyflyte = os.path.join(os.path.dirname(sys.executable), "pyflyte")
+        if not os.path.isfile(_pyflyte):
+            _pyflyte = "pyflyte"
+        # Pass origin_run_id so _mf_generate_run_id reuses the failed run's ID,
+        # allowing Metaflow to skip steps whose artifacts already exist.
+        cmd = [_pyflyte, "run", tmp_path, wf_name, "--origin_run_id", clone_run_id]
+        for k, v in params.items():
+            cmd += ["--%s" % k, v]
+
+        env = {**os.environ, "METAFLOW_FLYTE_LOCAL_RUN_ID": run_id}
+        obj.echo("Resuming from run %s: %s" % (clone_run_id, " ".join(cmd)), bold=True)  # type: ignore[attr-defined]
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise FlyteException(
+                "pyflyte run failed with exit code %d:\n%s" % (result.returncode, result.stderr)
+            )
+
+        obj.echo(  # type: ignore[attr-defined]
+            "Resumed Flyte execution (pathspec: *{pathspec}*).".format(pathspec=pathspec),
+            bold=True,
+        )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 

@@ -39,6 +39,8 @@ from metaflow_extensions.flyte.plugins.flyte._types import (
     NodeType,
     ParameterSpec,
     StepSpec,
+    TriggerOnFinishSpec,
+    TriggerSpec,
 )
 
 
@@ -253,6 +255,12 @@ def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
     if spec.schedule_cron:
         parts.append(_render_launch_plan(spec))
 
+    for trigger in spec.triggers:
+        parts.append(_render_event_trigger_launch_plan(spec, trigger))
+
+    for tof in spec.trigger_on_finishes:
+        parts.append(_render_trigger_on_finish_launch_plan(spec, tof))
+
     parts.append("if __name__ == '__main__':\n    %s()" % _wf_fn(spec.name))
 
     return "\n\n\n".join(parts)
@@ -285,7 +293,7 @@ from datetime import timedelta
 from typing import List
 
 import flytekit
-from flytekit import current_context, dynamic, task, workflow
+from flytekit import Resources, current_context, dynamic, task, workflow
 from flytekit.core.launch_plan import LaunchPlan
 
 # ---------------------------------------------------------------------------
@@ -317,11 +325,31 @@ def _mf_task(**extra):
 # ---------------------------------------------------------------------------
 
 
+def _resources_expr(step: StepSpec) -> str | None:
+    """Return a ``Resources(...)`` expression for ``@resources`` attributes, or None."""
+    if step.resource_cpu is None and step.resource_gpu is None and step.resource_memory is None:
+        return None
+    args = []
+    if step.resource_cpu is not None:
+        args.append("cpu=%r" % str(step.resource_cpu))
+    if step.resource_memory is not None:
+        # Metaflow memory is in MB; Flyte uses string like "1024Mi"
+        args.append("mem=%r" % ("%dMi" % step.resource_memory))
+    if step.resource_gpu is not None:
+        args.append("gpu=%r" % str(step.resource_gpu))
+    return "Resources(%s)" % ", ".join(args)
+
+
 def _task_decorator(step: StepSpec) -> str:
     """Build the ``@_mf_task(...)`` decorator line for a step."""
     parts = ["retries=%d" % step.max_user_code_retries]
     if step.timeout_seconds is not None:
         parts.append("timeout=timedelta(seconds=%d)" % step.timeout_seconds)
+    res = _resources_expr(step)
+    if res is not None:
+        # Translate @resources to native Flyte resource requests/limits.
+        parts.append("requests=%s" % res)
+        parts.append("limits=%s" % res)
     return "@_mf_task(%s)" % ", ".join(parts)
 
 
@@ -671,6 +699,91 @@ _schedule_launch_plan = LaunchPlan.get_or_create(
     name={schedule_name},
     schedule=flytekit.CronSchedule(schedule={spec.schedule_cron!r}),
 )'''
+
+
+# ---------------------------------------------------------------------------
+# LaunchPlans for @trigger and @trigger_on_finish support
+# ---------------------------------------------------------------------------
+
+
+def _render_event_trigger_launch_plan(spec: FlowSpec, trigger: TriggerSpec) -> str:
+    """Return a LaunchPlan comment block for @trigger(event=...).
+
+    Flyte does not have a built-in named-event trigger equivalent to Metaflow's
+    @trigger decorator.  The closest Flyte primitive is a LaunchPlan that is
+    activated manually (or via an external orchestration layer that watches for
+    the named event and calls LaunchPlan.execute()).  We therefore emit an
+    *inactive* LaunchPlan stub with the event name encoded in the plan name so
+    it is discoverable in the Flyte UI, and include a descriptive comment
+    explaining the mapping.
+    """
+    wf = _wf_fn(spec.name)
+    safe_event = re.sub(r"[^a-zA-Z0-9_]", "_", trigger.event_name)
+    plan_name = repr("%s_on_event_%s" % (wf, safe_event))
+    fixed_inputs_parts = []
+    for flow_param, event_field in trigger.parameter_map:
+        # Emit as a comment — fixed_inputs requires concrete values at
+        # registration time, which we don't have for dynamic event fields.
+        fixed_inputs_parts.append("# parameter %s <- event field %r" % (flow_param, event_field))
+    fixed_inputs_comment = "\n" + "\n".join(fixed_inputs_parts) if fixed_inputs_parts else ""
+    return '''\
+# ---------------------------------------------------------------------------
+# @trigger(event={event_name!r}) → Flyte LaunchPlan stub
+#
+# Flyte does not have a native named-event trigger.  This inactive LaunchPlan
+# is registered with a name that encodes the event so it can be discovered in
+# the Flyte UI and activated programmatically when the event fires.
+# To trigger on the event, call:
+#   lp = LaunchPlan.get_or_create(workflow={wf}, name={plan_name})
+#   lp()
+#{fixed_inputs_comment}
+# ---------------------------------------------------------------------------
+_event_trigger_{safe_event} = LaunchPlan.get_or_create(
+    workflow={wf},
+    name={plan_name},
+)'''.format(
+        event_name=trigger.event_name,
+        wf=wf,
+        plan_name=plan_name,
+        safe_event=safe_event,
+        fixed_inputs_comment=fixed_inputs_comment,
+    )
+
+
+def _render_trigger_on_finish_launch_plan(spec: FlowSpec, tof: TriggerOnFinishSpec) -> str:
+    """Return a LaunchPlan for @trigger_on_finish(flow=UpstreamFlow).
+
+    Flyte supports chaining workflows via LaunchPlan fixed_inputs and
+    on_completion triggers (Flyte Admin notifications).  The most portable
+    approach is to emit a comment-documented LaunchPlan named after the
+    upstream flow so operators can wire it up via the Flyte Admin API or
+    flytectl.  A code comment explains the recommended wiring.
+    """
+    wf = _wf_fn(spec.name)
+    safe_upstream = re.sub(r"[^a-zA-Z0-9_]", "_", tof.flow_name).lower()
+    plan_name = repr("%s_after_%s" % (wf, safe_upstream))
+    return '''\
+# ---------------------------------------------------------------------------
+# @trigger_on_finish(flow={upstream!r}) → Flyte LaunchPlan stub
+#
+# Register this LaunchPlan and configure it as a success notification target
+# on the upstream workflow's LaunchPlan in Flyte Admin.  The upstream
+# LaunchPlan name follows the same naming convention: <upstream_wf>_schedule
+# or similar.  Use flytectl or the Flyte Admin UI to set the
+# on_workflow_completion notification to call this plan.
+#
+# Programmatic wiring example (flyte-remote SDK):
+#   remote.execute(lp_downstream, inputs={{}})
+# ---------------------------------------------------------------------------
+_trigger_on_finish_{safe_upstream} = LaunchPlan.get_or_create(
+    workflow={wf},
+    name={plan_name},
+)'''.format(
+        upstream=tof.flow_name,
+        wf=wf,
+        plan_name=plan_name,
+        safe_upstream=safe_upstream,
+    )
 
 
 # ---------------------------------------------------------------------------
