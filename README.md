@@ -124,10 +124,61 @@ class MyFlow(FlowSpec):
         ...
 ```
 
+### Resource allocation
+
+`@resources` on a step maps to native Flyte `Resources` — CPU, memory, and GPU are allocated
+by the Flyte cluster rather than just hinted:
+
+```python
+class MyFlow(FlowSpec):
+    @resources(cpu=4, memory=8000, gpu=1)
+    @step
+    def train(self):
+        ...
+```
+
+Generates:
+
+```python
+@task(requests=Resources(cpu="4", mem="8000Mi", gpu="1"), ...)
+def task_train(...): ...
+```
+
 ### Scheduled flows
 
 If your flow has a `@schedule` decorator, the generated file includes a Flyte `LaunchPlan` with
 the corresponding cron schedule automatically.
+
+### Event-driven LaunchPlans (`@trigger` / `@trigger_on_finish`)
+
+Decorate your flow to emit Flyte `LaunchPlan` trigger configurations automatically.
+
+```python
+# Launch when a custom Flyte event label is matched
+@trigger(event="data.ready")
+class MyFlow(FlowSpec):
+    ...
+```
+
+```python
+# Launch when UpstreamFlow's LaunchPlan completes
+@trigger_on_finish(flow="UpstreamFlow")
+class DownstreamFlow(FlowSpec):
+    ...
+```
+
+Both translate to `LaunchPlan` definitions with appropriate `triggers` in the generated file.
+
+### Resume a failed run
+
+Re-run a failed execution, skipping steps that already completed:
+
+```bash
+python my_flow.py flyte resume --run-id flyte-<execution-id>
+```
+
+The resumed run reuses completed step outputs via `--clone-run-id`, so only unfinished steps
+re-execute.
 
 ### Project namespace
 
