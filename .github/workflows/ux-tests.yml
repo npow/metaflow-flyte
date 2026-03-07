@@ -1,0 +1,48 @@
+name: UX Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *"  # nightly — catches upstream metaflow regressions
+  workflow_dispatch:
+
+jobs:
+  ux-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      METAFLOW_DEFAULT_METADATA: local
+      METAFLOW_DEFAULT_DATASTORE: local
+      METAFLOW_DEFAULT_ENVIRONMENT: local
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pin Metaflow local datastore root
+        run: echo "METAFLOW_DATASTORE_SYSROOT_LOCAL=$HOME" >> "$GITHUB_ENV"
+
+      # Flyte remote execution requires a container image and sandbox MinIO.
+      # Until the Deployer interface is fully wired up, only runner-mode tests
+      # run here (local execution, no Flyte cluster needed).
+      # TODO: add flytectl demo start + image build for deployer-mode tests.
+
+      - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
+        with:
+          extra-install: "."
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}
+          pytest-args: "-n 4 -v --tb=short --timeout=1800 --exec-mode runner"
+          ux-test-config: |
+            backends:
+              - name: flyte-local
+                scheduler_type: null
+                cluster: null
+                decospec: null
+                enabled: true
