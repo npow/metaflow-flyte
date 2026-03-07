@@ -11,7 +11,7 @@ immutable value objects.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -43,7 +43,6 @@ class StepSpec:
     # For split-switch steps: maps case label -> branch step name
     switch_cases: tuple[tuple[str, str], ...] = ()
     timeout_seconds: int | None = None
-    retry_delay_seconds: int | None = None
     env_vars: tuple[tuple[str, str], ...] = ()  # from @environment(vars={...})
 
 
@@ -66,7 +65,7 @@ class FlowSpec:
     parameters: tuple[ParameterSpec, ...]
     description: str = ""
     schedule_cron: str | None = None
-    tags: tuple[str, ...] = field(default_factory=tuple)
+    tags: tuple[str, ...] = ()
     namespace: str | None = None
     project_name: str | None = None
 
@@ -89,4 +88,4 @@ class FlyteFlowConfig:
     tags: tuple[str, ...] = ()
     # Project-aware flow name (e.g. "myproject.prod.MyFlow") or plain name
     flow_name: str = ""
-    project_info: dict | None = None   # {"name": ..., "flow_name": ..., "branch": ...}
+    project_info: dict[str, str] | None = None  # {"name": ..., "flow_name": ..., "branch": ...}

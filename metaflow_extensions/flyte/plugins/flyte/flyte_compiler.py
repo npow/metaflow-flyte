@@ -39,22 +39,7 @@ class FlyteCompiler:
         self._name = name
         self._graph = graph
         self._flow = flow
-        self._metadata = metadata
-        self._flow_datastore = flow_datastore
-        self._environment = environment
-        self._event_logger = event_logger
-        self._monitor = monitor
-        self._tags = tags
-        self._namespace = namespace
         self._username = username
-        self._description = description
-        self._flow_file = flow_file
-        self._with_decorators = with_decorators
-        self._flyte_project = flyte_project
-        self._flyte_domain = flyte_domain
-        self._image = image
-        self._workflow_timeout = workflow_timeout
-        self._max_parallelism = max_parallelism
         self._branch = branch
         self._production = production
 
@@ -91,7 +76,7 @@ class FlyteCompiler:
         spec = analyze_graph(self._graph, self._flow)
         return generate_flyte_file(spec, self._cfg)
 
-    def _get_project(self) -> dict | None:
+    def _get_project(self) -> dict[str, str] | None:
         """Extract @project decorator info and compute the project-aware flow name."""
         try:
             from metaflow.plugins.project_decorator import format_name

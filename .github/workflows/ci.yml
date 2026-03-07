@@ -15,11 +15,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff
-        run: pip install ruff
+        run: pip install "ruff>=0.4"
       - name: Lint
         run: ruff check .
 
   test:
+    needs: lint
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -59,13 +60,22 @@ jobs:
           path: htmlcov/
           retention-days: 30
 
-      - name: Write coverage summary
+      - name: Coverage summary
         if: matrix.python-version == '3.12'
-        run: |
-          python -c "
-          import xml.etree.ElementTree as ET
-          tree = ET.parse('coverage.xml')
-          root = tree.getroot()
-          pct = float(root.attrib['line-rate']) * 100
-          print(f'## Coverage: {pct:.1f}%', flush=True)
-          " >> \$GITHUB_STEP_SUMMARY
+        uses: irongut/CodeCoverageSummary@v1.3.0
+        with:
+          filename: coverage.xml
+          badge: true
+          format: markdown
+          hide_branch_rate: false
+          hide_complexity: true
+          indicators: true
+          output: both
+          thresholds: "50 80"
+
+      - name: Add coverage comment to PR
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          recreate: true
+          path: code-coverage-results.md

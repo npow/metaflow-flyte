@@ -1,6 +1,6 @@
 [project]
 name = "metaflow-flyte"
-version = "0.4.0"
+version = "0.4.1"
 description = "Run Metaflow flows as Flyte workflows"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -61,13 +61,18 @@ show_missing = true
 skip_covered = false
 fail_under = 80
 
+[tool.pyright]
+include = ["metaflow_extensions"]
+pythonVersion = "3.10"
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "W", "B"]
+select = ["E", "F", "I", "UP", "W", "B", "C4"]
 ignore = [
     "E501",   # line too long — generated code has long lines
     "B008",   # do not perform function calls in default arguments
+    "B904",   # raise from None in except blocks
 ]

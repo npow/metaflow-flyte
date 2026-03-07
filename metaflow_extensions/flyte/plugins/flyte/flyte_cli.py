@@ -9,18 +9,19 @@ register  Register the workflow with a Flyte cluster.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import tempfile
+import uuid
 
 from metaflow._vendor import click
 from metaflow.exception import MetaflowException
 from metaflow.util import get_username
 
-from metaflow_extensions.flyte.plugins.flyte.exception import (
-    FlyteException,
-    NotSupportedException,
-)
+from metaflow_extensions.flyte.plugins.flyte._codegen import _wf_fn
+from metaflow_extensions.flyte.plugins.flyte.exception import FlyteException
 from metaflow_extensions.flyte.plugins.flyte.flyte_compiler import FlyteCompiler
 
 
@@ -106,7 +107,6 @@ def create(
     production: bool,
     deployer_attribute_file: str | None,
 ) -> None:
-    import json
     flow_name = obj.flow.name  # type: ignore[attr-defined]
     if output_file is None:
         output_file = "%s_flyte.py" % flow_name.lower()
@@ -123,10 +123,9 @@ def create(
 
     if deployer_attribute_file:
         # Capture env vars needed for local execution so from_deployment can restore them.
-        import os as _os
         _env_keys = ("METAFLOW_DEFAULT_METADATA", "METAFLOW_DEFAULT_DATASTORE",
                      "METAFLOW_DEFAULT_ENVIRONMENT", "METAFLOW_DATASTORE_SYSROOT_LOCAL")
-        _saved_env = {k: _os.environ[k] for k in _env_keys if k in _os.environ}
+        _saved_env = {k: os.environ[k] for k in _env_keys if k in os.environ}
         with open(deployer_attribute_file, "w") as f:
             json.dump(
                 {
@@ -192,8 +191,6 @@ def run(
     production: bool,
     remote: bool,
 ) -> None:
-    import tempfile
-
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tmp:
         tmp_path = tmp.name
 
@@ -275,8 +272,6 @@ def register(
     production: bool,
     deployer_attribute_file: str | None,
 ) -> None:
-    import json
-
     if os.path.abspath(sys.argv[0]) == os.path.abspath(output_file):
         raise MetaflowException("Output file cannot be the same as the flow file.")
 
@@ -286,15 +281,7 @@ def register(
         branch=branch, production=production,
     )
 
-    register_cmd = [
-        "pyflyte", "register",
-        "--project", flyte_project,
-        "--domain", flyte_domain,
-    ]
-    if insecure:
-        register_cmd.append("--insecure")
-    register_cmd.append(output_file)
-
+    register_cmd = _pyflyte_register_cmd(flyte_project, flyte_domain, insecure, output_file)
     obj.echo("Registering: %s" % " ".join(register_cmd), bold=True)  # type: ignore[attr-defined]
     result = subprocess.run(register_cmd)
     if result.returncode != 0:
@@ -370,8 +357,6 @@ def deploy(
     production: bool,
     deployer_attribute_file: str | None,
 ) -> None:
-    import json
-
     if os.path.abspath(sys.argv[0]) == os.path.abspath(output_file):
         raise MetaflowException("Output file cannot be the same as the flow file.")
 
@@ -382,15 +367,7 @@ def deploy(
     )
 
     if image:
-        register_cmd = [
-            "pyflyte", "register",
-            "--project", flyte_project,
-            "--domain", flyte_domain,
-        ]
-        if insecure:
-            register_cmd.append("--insecure")
-        register_cmd.append(output_file)
-
+        register_cmd = _pyflyte_register_cmd(flyte_project, flyte_domain, insecure, output_file)
         obj.echo("Registering: %s" % " ".join(register_cmd), bold=True)  # type: ignore[attr-defined]
         result = subprocess.run(register_cmd)
         if result.returncode != 0:
@@ -465,10 +442,6 @@ def trigger(
     deployer_attribute_file: str | None,
     run_params: tuple[str, ...],
 ) -> None:
-    import json
-    import tempfile
-    import uuid
-
     # Parse run_params into CLI args for pyflyte run.
     params: dict[str, str] = {}
     for kv in run_params:
@@ -507,9 +480,8 @@ def trigger(
         # Run locally (no --remote): pyflyte executes tasks as local Python
         # functions so Metaflow metadata is written to ~/.metaflow/.
         # Use pyflyte from the same env as the current Python interpreter.
-        import os as _os
-        _pyflyte = _os.path.join(_os.path.dirname(sys.executable), "pyflyte")
-        if not _os.path.isfile(_pyflyte):
+        _pyflyte = os.path.join(os.path.dirname(sys.executable), "pyflyte")
+        if not os.path.isfile(_pyflyte):
             _pyflyte = "pyflyte"
         cmd = [_pyflyte, "run", tmp_path, wf_name]
         for k, v in params.items():
@@ -537,6 +509,14 @@ def trigger(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _pyflyte_register_cmd(flyte_project: str, flyte_domain: str, insecure: bool, output_file: str) -> list[str]:
+    cmd = ["pyflyte", "register", "--project", flyte_project, "--domain", flyte_domain]
+    if insecure:
+        cmd.append("--insecure")
+    cmd.append(output_file)
+    return cmd
 
 
 def _make_compiler_and_write(
@@ -582,7 +562,6 @@ def _make_compiler_and_write(
 
 
 def _resolve_name(obj: object) -> str:
-    import re
     name = obj.flow.name  # type: ignore[attr-defined]
 
     try:
@@ -595,12 +574,3 @@ def _resolve_name(obj: object) -> str:
         pass
 
     return name
-
-
-def _wf_fn(flow_name: str) -> str:
-    result: list[str] = []
-    for i, ch in enumerate(flow_name):
-        if ch.isupper() and i > 0:
-            result.append("_")
-        result.append(ch.lower())
-    return "".join(result)

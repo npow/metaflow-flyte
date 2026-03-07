@@ -15,8 +15,9 @@ Supported Metaflow graph shapes
 
 from __future__ import annotations
 
+import warnings
 from collections import deque
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from metaflow.parameters import deploy_time_eval
 
@@ -26,13 +27,7 @@ from metaflow_extensions.flyte.plugins.flyte._types import (
     ParameterSpec,
     StepSpec,
 )
-from metaflow_extensions.flyte.plugins.flyte.exception import (
-    NotSupportedException,
-    FlyteException,
-)
-
-if TYPE_CHECKING:
-    from metaflow.flowgraph import FlowGraph
+from metaflow_extensions.flyte.plugins.flyte.exception import NotSupportedException
 
 
 def analyze_graph(
@@ -67,8 +62,6 @@ def analyze_graph(
 
 def _validate(graph: Any, flow: Any) -> None:
     """Raise NotSupportedException for features incompatible with Flyte."""
-    import warnings
-
     for node in graph:
         if node.parallel_foreach:
             raise NotSupportedException(
@@ -112,15 +105,6 @@ def _max_user_code_retries(node: Any) -> int:
         user_retries, _ = deco.step_task_retry_count()
         max_retries = max(max_retries, user_retries)
     return max_retries
-
-
-def _step_retry_delay_seconds(node: Any) -> int | None:
-    for deco in node.decorators:
-        if deco.name == "retry":
-            mins = deco.attributes.get("minutes_between_retries", 0)
-            if mins:
-                return int(mins) * 60
-    return None
 
 
 def _step_timeout_seconds(node: Any) -> int | None:
@@ -223,7 +207,6 @@ def _topological_order(graph: Any) -> list[StepSpec]:
             is_condition_join=_is_condition_join(graph, node),
             switch_cases=switch_cases,
             timeout_seconds=_step_timeout_seconds(node),
-            retry_delay_seconds=_step_retry_delay_seconds(node),
             env_vars=_step_env_vars(node),
         )
         result.append(spec)
@@ -243,19 +226,21 @@ def _param_kwarg(param: Any, key: str) -> Any:
     return value
 
 
+_PARAM_TYPE_MAP = {
+    "int": "int",
+    "float": "float",
+    "bool": "bool",
+    "str": "str",
+    "NoneType": "str",
+}
+
+
 def _extract_parameters(flow: Any) -> list[ParameterSpec]:
-    _type_map = {
-        "int": "int",
-        "float": "float",
-        "bool": "bool",
-        "str": "str",
-        "NoneType": "str",
-    }
     params: list[ParameterSpec] = []
     for _, param in flow._get_parameters():
         raw_default = _param_kwarg(param, "default")
         default = deploy_time_eval(raw_default)
-        type_name = _type_map.get(type(default).__name__, "str")
+        type_name = _PARAM_TYPE_MAP.get(type(default).__name__, "str")
         params.append(
             ParameterSpec(
                 name=param.name,
@@ -267,19 +252,23 @@ def _extract_parameters(flow: Any) -> list[ParameterSpec]:
     return params
 
 
+_SCHEDULE_CRONS = {
+    "weekly": "0 0 * * 0",
+    "hourly": "0 * * * *",
+    "daily":  "0 0 * * *",
+}
+
+
 def _extract_schedule(flow: Any) -> str | None:
     schedules = flow._flow_decorators.get("schedule")
     if not schedules:
         return None
-    s = schedules[0]
-    if s.attributes.get("cron"):
-        return s.attributes["cron"]
-    if s.attributes.get("weekly"):
-        return "0 0 * * 0"
-    if s.attributes.get("hourly"):
-        return "0 * * * *"
-    if s.attributes.get("daily"):
-        return "0 0 * * *"
+    attrs = schedules[0].attributes
+    if attrs.get("cron"):
+        return attrs["cron"]
+    for key, cron in _SCHEDULE_CRONS.items():
+        if attrs.get(key):
+            return cron
     return None
 
 

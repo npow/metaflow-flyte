@@ -63,7 +63,7 @@ class FlyteInternalDecorator(StepDecorator):
                 field=k,
                 value=v,
                 type=k,
-                tags=["attempt_id:{0}".format(retry_count)],
+                tags=[f"attempt_id:{retry_count}"],
             )
             for k, v in meta.items()
         ]
@@ -88,4 +88,4 @@ class FlyteInternalDecorator(StepDecorator):
                 num_splits = getattr(flow, "_foreach_num_splits", None)
                 if num_splits is not None:
                     with open(info_path, "w") as f:
-                        json.dump({"num_splits": int(num_splits)}, f)
+                        json.dump({"num_splits": num_splits}, f)
