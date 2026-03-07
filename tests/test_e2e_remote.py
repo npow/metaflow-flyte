@@ -37,8 +37,8 @@ IMAGE = os.environ.get("FLYTE_TEST_IMAGE")
 if not IMAGE:
     pytest.skip("FLYTE_TEST_IMAGE not set — skipping remote e2e tests", allow_module_level=True)
 
-FLYTE_PROJECT = "flytesnacks"
-FLYTE_DOMAIN = "development"
+FLYTE_PROJECT = os.environ.get("FLYTE_PROJECT", "flytesnacks")
+FLYTE_DOMAIN = os.environ.get("FLYTE_DOMAIN", "development")
 
 
 # ---------------------------------------------------------------------------
@@ -94,37 +94,18 @@ def _run_remote(out_path: Path, wf_name: str, params: dict | None = None) -> Non
 
 pytestmark = pytest.mark.e2e
 
+_FLOWS = [
+    pytest.param("linear_flow.py",    "linear_flow",    None,                   id="linear"),
+    pytest.param("branch_flow.py",    "branch_flow",    None,                   id="branch"),
+    pytest.param("foreach_flow.py",   "foreach_flow",   None,                   id="foreach"),
+    pytest.param("param_flow.py",     "param_flow",     {"greeting": "Flyte"},  id="params"),
+    pytest.param("condition_flow.py", "conditional_flow", None,                 id="conditional"),
+]
 
-def test_e2e_linear_flow(tmp_path):
-    """Linear 3-step flow runs successfully in the cluster."""
+
+@pytest.mark.parametrize("flow_file,wf_name,params", _FLOWS)
+def test_e2e_flow(tmp_path, flow_file, wf_name, params):
+    """Flow compiles and runs successfully as real Flyte tasks in the cluster."""
     out = tmp_path / "workflow.py"
-    _compile(FLOWS_DIR / "linear_flow.py", out)
-    _run_remote(out, "linear_flow")
-
-
-def test_e2e_branch_flow(tmp_path):
-    """Parallel split/join flow: both branches run and join successfully."""
-    out = tmp_path / "workflow.py"
-    _compile(FLOWS_DIR / "branch_flow.py", out)
-    _run_remote(out, "branch_flow")
-
-
-def test_e2e_foreach_flow(tmp_path):
-    """Dynamic fan-out foreach flow: 3 body tasks run in parallel."""
-    out = tmp_path / "workflow.py"
-    _compile(FLOWS_DIR / "foreach_flow.py", out)
-    _run_remote(out, "foreach_flow")
-
-
-def test_e2e_param_flow(tmp_path):
-    """Parameters are forwarded correctly from pyflyte run to Metaflow init."""
-    out = tmp_path / "workflow.py"
-    _compile(FLOWS_DIR / "param_flow.py", out)
-    _run_remote(out, "param_flow", {"greeting": "Flyte"})
-
-
-def test_e2e_conditional_flow(tmp_path):
-    """Conditional (split-switch) flow: correct branch selected at runtime."""
-    out = tmp_path / "workflow.py"
-    _compile(FLOWS_DIR / "condition_flow.py", out)
-    _run_remote(out, "conditional_flow")
+    _compile(FLOWS_DIR / flow_file, out)
+    _run_remote(out, wf_name, params)
