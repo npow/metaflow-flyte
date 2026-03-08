@@ -132,7 +132,7 @@ def create(
         # the value that was actually written (avoids stale env from a prior run).
         try:
             import re as _re
-            with open(os.path.abspath(output_file), "r") as _wf:
+            with open(os.path.abspath(output_file)) as _wf:
                 _wf_src = _wf.read()
             _m = _re.search(r"^FLOW_CONFIG_VALUE: str \| None = (.+)$", _wf_src, _re.MULTILINE)
             if _m:
