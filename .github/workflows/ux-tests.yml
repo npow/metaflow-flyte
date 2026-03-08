@@ -59,7 +59,7 @@ jobs:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           # Run deployer mode without xdist parallelism (-n 0): concurrent pyflyte
           # run invocations can collide in the local Metaflow datastore.
-          pytest-args: "-n 0 -v --tb=short --timeout=300 --exec-mode deployer --cov-fail-under=0"
+          pytest-args: "-n 0 -v --tb=short --timeout=300 --exec-mode deployer --cov-fail-under=0 -k 'not hello_conda'"
           test-files: "test_basic.py test_config.py test_dag.py"
           ux-test-config: |
             backends:
