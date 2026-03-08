@@ -177,7 +177,6 @@ jobs:
               - name: metaflow-meta
                 persistentVolumeClaim:
                   claimName: metaflow-meta-pvc
-              initContainers: []
               containers:
               - name: primary
                 image: python:3.11-slim
