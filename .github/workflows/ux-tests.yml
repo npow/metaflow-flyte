@@ -55,7 +55,7 @@ jobs:
     #   runner can call metaflow.Run(pathspec) to read task metadata and artifacts.
     # - S3 artifacts go to sandbox MinIO (in-cluster DNS for pods,
     #   localhost:30002 NodePort for the host).
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
 
@@ -220,7 +220,8 @@ jobs:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           # No xdist (-n 0): concurrent pyflyte --remote calls can collide.
           # Only hello_world: basic smoke-test with real Flyte task scheduling.
-          pytest-args: "-n 0 -v --tb=short --timeout=600 --exec-mode deployer --cov-fail-under=0 -k 'hello_world'"
+          # timeout=1800: accounts for code upload + Flyte scheduling + image pull.
+          pytest-args: "-n 0 -v --tb=short --timeout=1800 --exec-mode deployer --cov-fail-under=0 -k 'hello_world'"
           test-files: "test_basic.py"
           ux-test-config: |
             backends:
