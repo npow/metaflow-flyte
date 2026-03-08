@@ -17,3 +17,7 @@ htmlcov/
 *.so
 bin/
 .DS_Store
+# Generated Flyte workflow files produced by "flyte create"
+*_flyte.py
+# Test coverage XML
+coverage.xml
