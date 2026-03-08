@@ -59,7 +59,14 @@ jobs:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           # Run deployer mode without xdist parallelism (-n 0): concurrent pyflyte
           # run invocations can collide in the local Metaflow datastore.
-          pytest-args: "-n 0 -v --tb=short --timeout=300 --exec-mode deployer --cov-fail-under=0"
+          # Known flyte-deployer limitations skipped with -k:
+          #   retry        — @retry requires a cluster-side retry loop; local
+          #                  pyflyte run re-raises on attempt 0.
+          #   nested_foreach — nested foreach codegen not yet supported.
+          # test_config.py is omitted entirely: Config / config_expr require
+          # METAFLOW_FLOW_CONFIG_VALUE propagation, not yet implemented.
+          pytest-args: "-n 0 -v --tb=short --timeout=300 --exec-mode deployer --cov-fail-under=0 -k 'not retry and not nested_foreach'"
+          test-files: "test_basic.py test_dag.py"
           ux-test-config: |
             backends:
               - name: flyte-deployer

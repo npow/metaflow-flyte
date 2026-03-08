@@ -148,15 +148,23 @@ class FlyteDeployedFlow(DeployedFlow):
         FlyteTriggeredRun
         """
         # Convert kwargs to "key=value" strings for --run-param.
-        run_params = tuple(f"{k}={v}" for k, v in kwargs.items())
+        # Use a list (not a tuple) because the MetaflowAPI click_api type-checks
+        # against Union[List[str], Tuple[str]] where Tuple[str] means a 1-element
+        # tuple; a multi-element tuple fails the check.
+        run_params = [f"{k}={v}" for k, v in kwargs.items()]
 
         with temporary_fifo() as (attribute_file_path, attribute_file_fd):
             # Pass the plain flow class name (e.g. "HelloFlow"), not the JSON
             # recovery identifier stored in self.name, so that the trigger CLI
             # can pass it to _wf_fn() to derive the pyflyte workflow function name.
-            trigger_kwargs = {"name": self.flow_name, "deployer_attribute_file": attribute_file_path}
+            trigger_kwargs: dict = {"name": self.flow_name, "deployer_attribute_file": attribute_file_path}
             if run_params:
                 trigger_kwargs["run_params"] = run_params
+            # Propagate --branch so @project flows use the same branch in the
+            # re-compiled trigger as they did in the original create().
+            branch = self.deployer.top_level_kwargs.get("branch")
+            if branch:
+                trigger_kwargs["branch"] = branch
             command = get_lower_level_group(
                 self.deployer.api,
                 self.deployer.top_level_kwargs,
