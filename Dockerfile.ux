@@ -1,0 +1,37 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages: metaflow + flytekit + boto3 for S3 access
+RUN pip install --no-cache-dir \
+    "metaflow>=2.9" \
+    "flytekit>=1.10" \
+    "boto3>=1.26"
+
+# Install metaflow-flyte from the package directory
+COPY metaflow_extensions/ /pkg/metaflow_extensions/
+COPY pyproject.toml /pkg/
+RUN pip install --no-cache-dir -e /pkg/
+
+# UX test flows — copied flat (all subdirs merged) so that FLOW_FILE basename
+# lookup works regardless of the original subdirectory (basic/, config/, dag/).
+# METAFLOW_FLYTE_FLOW_FILE=/app/flows/<basename> is set by the trigger command.
+RUN mkdir -p /app/flows
+COPY ux_flows/ /app/flows/
+
+# Metaflow and MinIO configuration for in-cluster execution.
+# METAFLOW_S3_ENDPOINT_URL points to the sandbox MinIO service DNS — this is the
+# URL reachable from inside k3d task pods (NOT the NodePort used by the host).
+# METAFLOW_DEFAULT_DATASTORE may be overridden by --envvars at trigger time.
+ENV USERNAME=metaflow \
+    AWS_ACCESS_KEY_ID=minio \
+    AWS_SECRET_ACCESS_KEY=miniostorage \
+    AWS_DEFAULT_REGION=us-east-1 \
+    METAFLOW_DEFAULT_METADATA=local \
+    METAFLOW_DEFAULT_DATASTORE=s3 \
+    METAFLOW_DATASTORE_SYSROOT_S3=s3://my-s3-bucket/metaflow/ \
+    METAFLOW_S3_ENDPOINT_URL=http://flyte-sandbox-minio.flyte.svc.cluster.local:9000
+
+WORKDIR /workspace

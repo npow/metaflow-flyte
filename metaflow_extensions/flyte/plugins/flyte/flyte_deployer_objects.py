@@ -35,11 +35,19 @@ class FlyteTriggeredRun(TriggeredRun):
         old_sysroot = os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL")
         try:
             os.environ["METAFLOW_DEFAULT_METADATA"] = meta_type
-            metaflow.metadata(meta_type)
             if meta_type == "local" and sysroot is None:
                 sysroot = os.path.expanduser("~")
-            if sysroot:
+            if meta_type == "local" and sysroot:
+                # Use "local@<sysroot>" to force compute_info() to set
+                # LocalStorage.datastore_root to the provided path.  This is
+                # necessary because LocalStorage.SYSROOT_VAR is set at module
+                # import time and cannot be changed via os.environ after import.
+                metaflow.metadata(f"local@{sysroot}")
                 os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = sysroot
+            else:
+                metaflow.metadata(meta_type)
+                if sysroot:
+                    os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = sysroot
             return metaflow.Run(self.pathspec, _namespace_check=False)
         except MetaflowNotFound:
             return None
@@ -199,6 +207,16 @@ class FlyteDeployedFlow(DeployedFlow):
             branch = self.deployer.top_level_kwargs.get("branch")
             if branch:
                 trigger_kwargs["branch"] = branch
+            # Propagate remote-mode settings from additional_info (set by create()).
+            _additional_info = getattr(self.deployer, "additional_info", {}) or {}
+            if _additional_info.get("flyte_endpoint"):
+                trigger_kwargs["flyte_endpoint"] = _additional_info["flyte_endpoint"]
+            if _additional_info.get("image"):
+                trigger_kwargs["image"] = _additional_info["image"]
+            if _additional_info.get("container_flows_dir"):
+                trigger_kwargs["container_flows_dir"] = _additional_info["container_flows_dir"]
+            if _additional_info.get("container_sysroot"):
+                trigger_kwargs["container_sysroot"] = _additional_info["container_sysroot"]
             command = get_lower_level_group(
                 self.deployer.api,
                 self.deployer.top_level_kwargs,

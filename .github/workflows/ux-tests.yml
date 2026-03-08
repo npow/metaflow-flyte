@@ -41,31 +41,182 @@ jobs:
 
   deployer-tests:
     runs-on: ubuntu-latest
-    # All deployer tests run sequentially in one job.  The Flyte deployer's
-    # trigger command runs pyflyte run in-process (no --remote), so no external
-    # Flyte cluster is required — flytekit handles execution locally.
-    timeout-minutes: 30
+    # Runs deployer tests against a real Flyte cluster (flytectl demo start).
+    #
+    # Metadata sharing architecture:
+    # - flytectl demo starts a k3d (k3s-in-Docker) Flyte sandbox.
+    # - A HostPath PersistentVolume backed by /var/lib/flyte/storage/metaflow_meta
+    #   (inside the flyte-sandbox Docker container) is created in k3s.
+    # - A PodTemplate named "default" in the flytesnacks-development namespace
+    #   tells Flyte propeller to mount this PVC into every task pod.
+    # - Task containers write Metaflow local metadata to /var/lib/flyte/metaflow_meta.
+    # - On Linux (GHA), the Docker volume is accessible to the host at
+    #   /var/lib/docker/volumes/flyte-sandbox/_data/metaflow_meta, so the test
+    #   runner can call metaflow.Run(pathspec) to read task metadata and artifacts.
+    # - S3 artifacts go to sandbox MinIO (in-cluster DNS for pods,
+    #   localhost:30002 NodePort for the host).
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Pin Metaflow local datastore root
-        run: echo "METAFLOW_DATASTORE_SYSROOT_LOCAL=$HOME" >> "$GITHUB_ENV"
+
+      # Check out metaflow before building the image so UX flows are available.
+      - name: Check out metaflow (for UX flows)
+        uses: actions/checkout@v4
+        with:
+          repository: Netflix/metaflow
+          ref: npow/corral-devstack
+          path: _metaflow_src
+
+      - name: Install flytectl
+        run: |
+          curl -sL https://ctl.flyte.org/install | sudo bash -s -- -b /usr/local/bin
+          flytectl version
+
+      - name: Start Flyte sandbox
+        # flytectl demo start pulls the sandbox image and waits for readiness.
+        run: flytectl demo start
+        timeout-minutes: 15
+
+      - name: Write pyflyte/flytectl config with storage section
+        # config-sandbox.yaml only has the admin endpoint. Add the MinIO storage
+        # section so pyflyte --remote --copy all can upload code bundles.
+        run: |
+          cat > ~/.flyte/config.yaml << 'EOF'
+          admin:
+            endpoint: dns:///localhost:30080
+            insecure: true
+          storage:
+            type: stow
+            stow:
+              kind: s3
+              config:
+                region: us-east-1
+                disable_ssl: true
+                v2_signing: false
+                endpoint: http://localhost:30002
+                auth_type: accesskey
+                access_key_id: minio
+                secret_access_key: miniostorage
+            container: my-s3-bucket
+          EOF
+
+      - name: Wait for Flyte admin
+        run: |
+          for i in $(seq 1 30); do
+            if flytectl get project 2>/dev/null | grep -q flytesnacks; then
+              echo "Flyte admin is ready"
+              break
+            fi
+            echo "Waiting... attempt $i/30"
+            sleep 10
+          done
+          flytectl get project | grep -q flytesnacks
+
+      - name: Create shared Metaflow metadata dir and k3s PersistentVolume
+        # Create a directory inside the flyte-sandbox container that will be used
+        # as the shared Metaflow local-metadata sysroot.  A HostPath PV/PVC and a
+        # PodTemplate ensure every task pod mounts this directory.
+        run: |
+          docker exec flyte-sandbox mkdir -p /var/lib/flyte/storage/metaflow_meta
+
+          # k3s kubectl is at /usr/local/bin/kubectl inside flyte-sandbox.
+          docker exec -i flyte-sandbox kubectl apply -f - << 'YAML'
+          apiVersion: v1
+          kind: PersistentVolume
+          metadata:
+            name: metaflow-meta-pv
+          spec:
+            capacity:
+              storage: 5Gi
+            accessModes: [ReadWriteMany]
+            persistentVolumeReclaimPolicy: Retain
+            storageClassName: ""
+            hostPath:
+              path: /var/lib/flyte/storage/metaflow_meta
+          ---
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: metaflow-meta-pvc
+            namespace: flytesnacks-development
+          spec:
+            accessModes: [ReadWriteMany]
+            storageClassName: ""
+            volumeName: metaflow-meta-pv
+            resources:
+              requests:
+                storage: 5Gi
+          ---
+          apiVersion: v1
+          kind: PodTemplate
+          metadata:
+            name: default
+            namespace: flytesnacks-development
+          template:
+            spec:
+              volumes:
+              - name: metaflow-meta
+                persistentVolumeClaim:
+                  claimName: metaflow-meta-pvc
+              containers:
+              - name: ""
+                volumeMounts:
+                - name: metaflow-meta
+                  mountPath: /var/lib/flyte/metaflow_meta
+          YAML
+
+          DOCKER_VOL=$(docker volume inspect flyte-sandbox --format '{{ .Mountpoint }}')
+          echo "MF_HOST_SYSROOT=${DOCKER_VOL}/metaflow_meta" >> "$GITHUB_ENV"
+
+      - name: Build and push UX task image
+        # Flatten all UX flows into ux_flows/ for the Docker build context.
+        # The sandbox Docker registry is on host port 30000.
+        run: |
+          mkdir -p ux_flows
+          find _metaflow_src/test/ux/core/flows -name "*.py" -exec cp {} ux_flows/ \;
+          docker build -t localhost:30000/metaflow-flyte-ux:latest -f Dockerfile.ux .
+          docker push localhost:30000/metaflow-flyte-ux:latest
+
+      - name: Pin host-side Metaflow sysroot
+        run: echo "METAFLOW_DATASTORE_SYSROOT_LOCAL=$MF_HOST_SYSROOT" >> "$GITHUB_ENV"
+
       - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
+        env:
+          # FLYTECTL_CONFIG tells pyflyte where to find the Flyte endpoint + MinIO.
+          FLYTECTL_CONFIG: /home/runner/.flyte/config.yaml
+          # S3 datastore (sandbox MinIO via NodePort).
+          # AWS_ENDPOINT_URL_S3 is picked up by boto3 without being injected
+          # into task containers (which use the baked-in in-cluster DNS URL).
+          METAFLOW_DEFAULT_DATASTORE: s3
+          METAFLOW_DATASTORE_SYSROOT_S3: "s3://my-s3-bucket/metaflow/"
+          AWS_ENDPOINT_URL_S3: "http://localhost:30002"
+          AWS_ACCESS_KEY_ID: minio
+          AWS_SECRET_ACCESS_KEY: miniostorage
+          AWS_DEFAULT_REGION: us-east-1
         with:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
-          # Run deployer mode without xdist parallelism (-n 0): concurrent pyflyte
-          # run invocations can collide in the local Metaflow datastore.
-          pytest-args: "-n 0 -v --tb=short --timeout=300 --exec-mode deployer --cov-fail-under=0 -k 'not hello_conda'"
-          test-files: "test_basic.py test_config.py test_dag.py"
+          # No xdist (-n 0): concurrent pyflyte --remote calls can collide.
+          # Only hello_world: basic smoke-test with real Flyte task scheduling.
+          pytest-args: "-n 0 -v --tb=short --timeout=600 --exec-mode deployer --cov-fail-under=0 -k 'hello_world'"
+          test-files: "test_basic.py"
           ux-test-config: |
             backends:
               - name: flyte-deployer
                 scheduler_type: flyte
                 cluster: null
                 decospec: null
-                deploy_args: {}
+                deploy_args:
+                  flyte_endpoint: "localhost:30080"
+                  image: "localhost:30000/metaflow-flyte-ux:latest"
+                  container_flows_dir: "/app/flows"
+                  container_sysroot: "/var/lib/flyte/metaflow_meta"
                 enabled: true

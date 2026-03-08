@@ -341,7 +341,7 @@ from flytekit.core.launch_plan import LaunchPlan
 # ---------------------------------------------------------------------------
 # Compile-time configuration
 # ---------------------------------------------------------------------------
-FLOW_FILE: str = {cfg.flow_file!r}
+FLOW_FILE: str = os.environ.get("METAFLOW_FLYTE_FLOW_FILE", {cfg.flow_file!r})
 FLOW_NAME: str = {effective_flow_name!r}
 DATASTORE_TYPE: str = {cfg.datastore_type!r}
 METADATA_TYPE: str = {cfg.metadata_type!r}

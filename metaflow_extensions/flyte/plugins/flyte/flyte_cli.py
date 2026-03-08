@@ -87,6 +87,24 @@ def flyte(obj: object) -> None:
 @click.option("--branch", default=None, help="@project branch name (for project flows).")
 @click.option("--production", is_flag=True, default=False, help="Deploy to the production branch.")
 @click.option(
+    "--endpoint",
+    "flyte_endpoint",
+    default=None,
+    help="Flyte Admin gRPC endpoint (host:port) for remote execution.",
+)
+@click.option(
+    "--container-flows-dir",
+    "container_flows_dir",
+    default=None,
+    help="Path to flows directory inside the container (sets METAFLOW_FLYTE_FLOW_FILE at runtime).",
+)
+@click.option(
+    "--container-sysroot",
+    "container_sysroot",
+    default=None,
+    help="Override METAFLOW_DATASTORE_SYSROOT_LOCAL injected into task containers.",
+)
+@click.option(
     "--deployer-attribute-file", default=None, hidden=True,
     help="Write deployment info JSON here (used by Metaflow Deployer API).",
 )
@@ -104,6 +122,9 @@ def create(
     max_parallelism: int | None,
     branch: str | None,
     production: bool,
+    flyte_endpoint: str | None,
+    container_flows_dir: str | None,
+    container_sysroot: str | None,
     deployer_attribute_file: str | None,
 ) -> None:
     flow_name = obj.flow.name  # type: ignore[attr-defined]
@@ -148,6 +169,14 @@ def create(
             "flyte_domain": flyte_domain,
             "saved_env": _saved_env,
         }
+        if flyte_endpoint:
+            _additional_info["flyte_endpoint"] = flyte_endpoint
+        if image:
+            _additional_info["image"] = image
+        if container_flows_dir:
+            _additional_info["container_flows_dir"] = container_flows_dir
+        if container_sysroot:
+            _additional_info["container_sysroot"] = container_sysroot
         # The "name" field becomes deployer.name which is used as the identifier
         # passed to FlyteDeployedFlow.from_deployment().  Encode everything needed
         # to recover the deployment so that from_deployment() can rebuild the
@@ -432,6 +461,28 @@ def deploy(
 @click.option("--branch", default=None)
 @click.option("--production", is_flag=True, default=False)
 @click.option(
+    "--endpoint",
+    "flyte_endpoint",
+    default=None,
+    help="Flyte Admin gRPC endpoint (host:port) for --remote execution.",
+)
+@click.option(
+    "--container-flows-dir",
+    "container_flows_dir",
+    default=None,
+    help="Path to the flows directory inside the container image (sets METAFLOW_FLYTE_FLOW_FILE env var).",
+)
+@click.option(
+    "--container-sysroot",
+    "container_sysroot",
+    default=None,
+    help=(
+        "Override METAFLOW_DATASTORE_SYSROOT_LOCAL injected into containers. "
+        "Use when the container mounts a shared volume at a different path than "
+        "the host-side sysroot (e.g. for shared-volume metadata in CI)."
+    ),
+)
+@click.option(
     "--deployer-attribute-file", default=None, hidden=True,
     help="Write triggered-run info JSON here (used by Metaflow Deployer API).",
 )
@@ -456,6 +507,9 @@ def trigger(
     max_parallelism: int | None,
     branch: str | None,
     production: bool,
+    flyte_endpoint: str | None,
+    container_flows_dir: str | None,
+    container_sysroot: str | None,
     deployer_attribute_file: str | None,
     run_params: tuple[str, ...],
 ) -> None:
@@ -481,36 +535,146 @@ def trigger(
 
         wf_name = _wf_fn(flow_name)
 
-        # Write the deployer attribute file BEFORE execution so handle_timeout
-        # can read it immediately (pyflyte run is synchronous and blocking).
-        if deployer_attribute_file:
-            with open(deployer_attribute_file, "w") as f:
-                json.dump(
-                    {
-                        "pathspec": pathspec,
-                        "name": flow_name,
-                        "metadata": "{}",
-                    },
-                    f,
-                )
-
-        # Run locally (no --remote): pyflyte executes tasks as local Python
-        # functions so Metaflow metadata is written to ~/.metaflow/.
         # Use pyflyte from the same env as the current Python interpreter.
         _pyflyte = os.path.join(os.path.dirname(sys.executable), "pyflyte")
         if not os.path.isfile(_pyflyte):
             _pyflyte = "pyflyte"
-        cmd = [_pyflyte, "run", tmp_path, wf_name]
-        for k, v in params.items():
-            cmd += [f"--{k}", v]
 
-        env = {**os.environ, "METAFLOW_FLYTE_LOCAL_RUN_ID": run_id}
-        obj.echo("Triggering (local): {}".format(" ".join(cmd)), bold=True)  # type: ignore[attr-defined]
-        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise FlyteException(
-                f"pyflyte run failed with exit code {result.returncode:d}:\n{result.stderr}"
+        if flyte_endpoint:
+            # Remote mode: register and execute on a real Flyte cluster.
+            # Write a minimal Flyte config so pyflyte connects to the right endpoint.
+            _flyte_cfg_file = tempfile.NamedTemporaryFile(
+                suffix=".yaml", delete=False, mode="w", prefix="flyte_cfg_"
             )
+            _flyte_cfg_file.write(
+                f"admin:\n  endpoint: {flyte_endpoint}\n  insecure: true\n"
+            )
+            _flyte_cfg_file.flush()
+            _flyte_cfg_file.close()
+
+            try:
+                cmd = [
+                    _pyflyte, "run", "--remote",
+                    "--project", flyte_project,
+                    "--domain", flyte_domain,
+                    "--copy", "all",
+                    "--wait",  # block until execution completes
+                ]
+                if image:
+                    cmd += ["--image", image]
+                # Inject Metaflow config env vars into the container via --envvars.
+                # This ensures the task containers use the correct datastore/metadata.
+                # NOTE: METAFLOW_S3_ENDPOINT_URL is intentionally excluded — the
+                # task image has the correct in-cluster MinIO URL baked in (e.g.
+                # http://flyte-sandbox-minio.flyte.svc.cluster.local:9000).
+                # Injecting the host-side NodePort URL (localhost:30002) would break
+                # in-container S3 access.  METAFLOW_DATASTORE_SYSROOT_S3 is also
+                # excluded because it is already set inside the container image.
+                _mf_env_keys = (
+                    "METAFLOW_DEFAULT_METADATA",
+                    "METAFLOW_DEFAULT_DATASTORE",
+                    "METAFLOW_DEFAULT_ENVIRONMENT",
+                    "METAFLOW_SERVICE_URL",
+                    "METAFLOW_SERVICE_INTERNAL_URL",
+                )
+                for _k in _mf_env_keys:
+                    if _k in os.environ:
+                        cmd += ["--envvars", f"{_k}={os.environ[_k]}"]
+                # Override METAFLOW_DATASTORE_SYSROOT_LOCAL if a container-specific
+                # sysroot was provided.  This is needed when the host and container
+                # access the same shared volume via different paths (e.g. the host
+                # sees /var/lib/docker/volumes/flyte-sandbox/_data/metaflow_local
+                # while containers mount the same volume at /var/lib/flyte/storage/metaflow_local).
+                if container_sysroot:
+                    cmd += ["--envvars", f"METAFLOW_DATASTORE_SYSROOT_LOCAL={container_sysroot}"]
+                # Override FLOW_FILE inside the container via env var.
+                if container_flows_dir:
+                    import posixpath
+                    # Read the host-side FLOW_FILE from the compiled workflow.
+                    _orig_flow: str | None = None
+                    try:
+                        import re as _re2
+                        with open(tmp_path) as _wf_f:
+                            _wf_src2 = _wf_f.read()
+                        _m2 = _re2.search(r'^FLOW_FILE: str = os\.environ\.get\("METAFLOW_FLYTE_FLOW_FILE", (.+)\)$', _wf_src2, _re2.MULTILINE)
+                        if _m2:
+                            import ast as _ast2
+                            _orig_flow = _ast2.literal_eval(_m2.group(1))
+                    except Exception:
+                        pass
+                    if _orig_flow:
+                        container_flow_file = posixpath.join(
+                            container_flows_dir.rstrip("/"),
+                            os.path.basename(_orig_flow),
+                        )
+                        cmd += ["--envvars", f"METAFLOW_FLYTE_FLOW_FILE={container_flow_file}"]
+                cmd += [tmp_path, wf_name]
+                for k, v in params.items():
+                    cmd += [f"--{k}", v]
+
+                env = {**os.environ, "FLYTECTL_CONFIG": _flyte_cfg_file.name}
+                obj.echo("Triggering (remote): {}".format(" ".join(cmd)), bold=True)  # type: ignore[attr-defined]
+                result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            finally:
+                try:
+                    os.unlink(_flyte_cfg_file.name)
+                except OSError:
+                    pass
+
+            if result.returncode != 0:
+                raise FlyteException(
+                    f"pyflyte run failed with exit code {result.returncode:d}:\n{result.stderr}"
+                )
+
+            # Parse the Flyte execution ID from pyflyte output and derive the
+            # Metaflow run_id (matches _mf_generate_run_id in generated code).
+            import re as _re
+            _stdout = result.stdout + result.stderr
+            _exec_match = _re.search(r"Execution (\S+) has succeeded", _stdout)
+            if _exec_match:
+                flyte_exec_id = _exec_match.group(1).rstrip(".")
+                run_id = "flyte-" + flyte_exec_id
+                pathspec = f"{flow_name}/{run_id}"
+            # Update the deployer attribute file with the resolved pathspec.
+            if deployer_attribute_file:
+                with open(deployer_attribute_file, "w") as f:
+                    json.dump(
+                        {
+                            "pathspec": pathspec,
+                            "name": flow_name,
+                            "metadata": "{}",
+                        },
+                        f,
+                    )
+        else:
+            # Local mode (no --remote): pyflyte executes tasks as local Python
+            # functions so Metaflow metadata is written to ~/.metaflow/.
+            # Write the deployer attribute file BEFORE execution so handle_timeout
+            # can read it immediately (the FIFO write must happen before pyflyte
+            # blocks on stdout, otherwise the parent deadlocks waiting to read).
+            if deployer_attribute_file:
+                with open(deployer_attribute_file, "w") as f:
+                    json.dump(
+                        {
+                            "pathspec": pathspec,
+                            "name": flow_name,
+                            "metadata": "{}",
+                        },
+                        f,
+                    )
+
+            cmd = [_pyflyte, "run", tmp_path, wf_name]
+            for k, v in params.items():
+                cmd += [f"--{k}", v]
+
+            env = {**os.environ, "METAFLOW_FLYTE_LOCAL_RUN_ID": run_id}
+            obj.echo("Triggering (local): {}".format(" ".join(cmd)), bold=True)  # type: ignore[attr-defined]
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                raise FlyteException(
+                    f"pyflyte run failed with exit code {result.returncode:d}:\n{result.stderr}"
+                )
 
         obj.echo(  # type: ignore[attr-defined]
             f"Triggered Flyte execution (pathspec: *{pathspec}*).",
