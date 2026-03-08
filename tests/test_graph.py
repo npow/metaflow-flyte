@@ -107,7 +107,8 @@ class TestConditionValidation:
 
 
 class TestResourcesWarning:
-    def test_resources_emits_user_warning(self):
+    def test_resources_emits_no_warning(self):
+        """@resources is translated to native Flyte Resources — no warning should be emitted."""
         node = _Node("compute", decos=["resources"])
         graph = _Graph([node])
         flow = _Flow()
@@ -115,30 +116,8 @@ class TestResourcesWarning:
             warnings.simplefilter("always")
             _validate(graph, flow)
 
-        resource_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-        assert len(resource_warnings) == 1
-        assert "resources" in str(resource_warnings[0].message).lower()
-
-    def test_resources_warning_mentions_step_name(self):
-        node = _Node("my_gpu_step", decos=["resources"])
-        graph = _Graph([node])
-        flow = _Flow()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _validate(graph, flow)
-
-        msgs = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
-        assert any("my_gpu_step" in m for m in msgs), "Warning should mention step name"
-
-    def test_resources_warning_is_user_warning(self):
-        node = _Node("step_a", decos=["resources"])
-        graph = _Graph([node])
-        flow = _Flow()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _validate(graph, flow)
-
-        assert all(issubclass(w.category, UserWarning) for w in caught if "resources" in str(w.message).lower())
+        resource_warnings = [w for w in caught if issubclass(w.category, UserWarning) and "resources" in str(w.message).lower()]
+        assert len(resource_warnings) == 0
 
     def test_resources_does_not_raise(self):
         node = _Node("step_a", decos=["resources"])
@@ -149,7 +128,8 @@ class TestResourcesWarning:
             warnings.simplefilter("always")
             _validate(graph, flow)
 
-    def test_multiple_resources_steps_each_warn(self):
+    def test_multiple_resources_steps_no_warnings(self):
+        """Multiple @resources steps should not emit any warnings."""
         nodes = [
             _Node("step_a", decos=["resources"]),
             _Node("step_b", decos=["resources"]),
@@ -161,7 +141,7 @@ class TestResourcesWarning:
             _validate(graph, flow)
 
         resource_warnings = [w for w in caught if issubclass(w.category, UserWarning) and "resources" in str(w.message).lower()]
-        assert len(resource_warnings) == 2
+        assert len(resource_warnings) == 0
 
 
 # ---------------------------------------------------------------------------
