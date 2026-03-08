@@ -122,11 +122,23 @@ jobs:
       - name: Create shared Metaflow metadata dir and k3s PersistentVolume
         # Create a directory inside the flyte-sandbox container that will be used
         # as the shared Metaflow local-metadata sysroot.  A HostPath PV/PVC and a
-        # PodTemplate ensure every task pod mounts this directory.
+        # PodTemplate ("default") ensure every task pod mounts this directory.
+        # Flyte propeller merges the "default" PodTemplate into task pods.
         run: |
           docker exec flyte-sandbox mkdir -p /var/lib/flyte/storage/metaflow_meta
 
-          # k3s kubectl is at /usr/local/bin/kubectl inside flyte-sandbox.
+          # flytesnacks-development namespace is created by Flyte Admin when it
+          # processes the seedProjects list; it may lag the API being ready.
+          for i in $(seq 1 30); do
+            if docker exec flyte-sandbox kubectl get namespace flytesnacks-development 2>/dev/null; then
+              echo "Namespace ready"
+              break
+            fi
+            echo "Waiting for namespace... attempt $i/30"
+            sleep 5
+          done
+          docker exec flyte-sandbox kubectl get namespace flytesnacks-development
+
           docker exec -i flyte-sandbox kubectl apply -f - << 'YAML'
           apiVersion: v1
           kind: PersistentVolume
@@ -165,8 +177,10 @@ jobs:
               - name: metaflow-meta
                 persistentVolumeClaim:
                   claimName: metaflow-meta-pvc
+              initContainers: []
               containers:
-              - name: ""
+              - name: primary
+                image: python:3.11-slim
                 volumeMounts:
                 - name: metaflow-meta
                   mountPath: /var/lib/flyte/metaflow_meta
@@ -174,6 +188,7 @@ jobs:
 
           DOCKER_VOL=$(docker volume inspect flyte-sandbox --format '{{ .Mountpoint }}')
           echo "MF_HOST_SYSROOT=${DOCKER_VOL}/metaflow_meta" >> "$GITHUB_ENV"
+          echo "Host sysroot: ${DOCKER_VOL}/metaflow_meta"
 
       - name: Build and push UX task image
         # Flatten all UX flows into ux_flows/ for the Docker build context.
