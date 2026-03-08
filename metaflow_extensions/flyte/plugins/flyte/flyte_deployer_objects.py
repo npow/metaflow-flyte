@@ -151,7 +151,10 @@ class FlyteDeployedFlow(DeployedFlow):
         run_params = tuple(f"{k}={v}" for k, v in kwargs.items())
 
         with temporary_fifo() as (attribute_file_path, attribute_file_fd):
-            trigger_kwargs = {"name": self.name, "deployer_attribute_file": attribute_file_path}
+            # Pass the plain flow class name (e.g. "HelloFlow"), not the JSON
+            # recovery identifier stored in self.name, so that the trigger CLI
+            # can pass it to _wf_fn() to derive the pyflyte workflow function name.
+            trigger_kwargs = {"name": self.flow_name, "deployer_attribute_file": attribute_file_path}
             if run_params:
                 trigger_kwargs["run_params"] = run_params
             command = get_lower_level_group(
