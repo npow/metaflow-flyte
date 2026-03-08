@@ -116,6 +116,10 @@ def _step_cmd(
         "--no-pylint",
         "--with=flyte_internal",
     ]
+    # Propagate the execution environment so that environment-aware decorators
+    # (e.g. @conda) activate the correct environment manager at task runtime.
+    if ENVIRONMENT_TYPE and ENVIRONMENT_TYPE != "local":
+        cmd += ["--environment", ENVIRONMENT_TYPE]
     # Propagate the @project branch so the step subprocess resolves the same
     # project branch name that was used at compile time (create / trigger).
     if PROJECT_BRANCH:
@@ -225,6 +229,14 @@ def _mf_generate_run_id(origin_run_id: str = '') -> str:
 # ---------------------------------------------------------------------------
 
 
+def _find_foreach_join_step(spec: FlowSpec, foreach_step_name: str) -> StepSpec | None:
+    """Return the foreach-join StepSpec that closes *foreach_step_name*'s fan-out."""
+    for s in spec.steps:
+        if s.is_foreach_join and s.split_parents and s.split_parents[-1] == foreach_step_name:
+            return s
+    return None
+
+
 def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
     """Return the full Python source of a runnable Flyte workflow file."""
     # Pre-compute foreach and conditional (split-switch) info in one pass.
@@ -240,6 +252,25 @@ def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
     foreach_body_set = set(foreach_body.values())
     condition_branch_set: set[str] = set().union(*condition_branches.values()) if condition_branches else set()
 
+    # Detect nested foreach: a foreach body step that is itself a foreach.
+    # For each such outer foreach step, record the inner join step that will be
+    # consumed inside the outer @dynamic expander rather than as a standalone
+    # workflow step.
+    #
+    # nested_foreach_joins: outer_foreach_step_name -> inner_join_step_name
+    # steps_consumed_in_dynamic: set of step names executed inside an outer dynamic
+    nested_foreach_joins: dict[str, str] = {}
+    steps_consumed_in_dynamic: set[str] = set()
+    for s in spec.steps:
+        if s.node_type == NodeType.FOREACH:
+            body_name = foreach_body.get(s.name)
+            if body_name and body_name in foreach_body:
+                # body step is itself a foreach — find its join
+                inner_join = _find_foreach_join_step(spec, body_name)
+                if inner_join:
+                    nested_foreach_joins[s.name] = inner_join.name
+                    steps_consumed_in_dynamic.add(inner_join.name)
+
     parts: list[str] = [
         _render_header(spec, cfg),
         _HELPERS,
@@ -250,12 +281,18 @@ def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
         parts.append(_render_task(step, spec, foreach_body, foreach_body_set, condition_branch_set))
         if step.node_type == NodeType.FOREACH:
             body_step = step_by_name[foreach_body[step.name]]
-            parts.append(_render_foreach_dynamic(step, body_step))
+            inner_join_name = nested_foreach_joins.get(step.name)
+            inner_join_step = step_by_name[inner_join_name] if inner_join_name else None
+            parts.append(_render_foreach_dynamic(step, body_step, inner_join_step))
         elif step.node_type == NodeType.SPLIT_SWITCH:
             branch_steps = [s for s in spec.steps if s.name in condition_branches[step.name]]
             parts.append(_render_condition_dynamic(step, branch_steps))
 
-    parts.append(_render_workflow(spec, cfg, foreach_body, foreach_body_set, condition_branches, condition_branch_set))
+    parts.append(_render_workflow(
+        spec, cfg, foreach_body, foreach_body_set,
+        condition_branches, condition_branch_set,
+        nested_foreach_joins, steps_consumed_in_dynamic,
+    ))
 
     if spec.schedule_cron:
         parts.append(_render_launch_plan(spec))
@@ -322,6 +359,10 @@ PROJECT_BRANCH: str = {(cfg.project_info or {}).get("branch_raw", "")!r}
 # METAFLOW_FLOW_CONFIG_VALUE into every step subprocess so that config_expr
 # and @project decorators evaluate correctly at task runtime.
 FLOW_CONFIG_VALUE: str | None = {cfg.flow_config_value!r}
+# Execution environment type passed via --environment at compile time.
+# Propagated to every step subprocess so that environment-aware decorators
+# (e.g. @conda) activate the correct environment manager at task runtime.
+ENVIRONMENT_TYPE: str = {cfg.environment_type!r}
 
 # Task decorator factory — applies IMAGE and enables Deck when set.
 _TASK_KWARGS = {{'container_image': IMAGE, 'enable_deck': True}} if IMAGE else {{'enable_deck': True}}
@@ -468,14 +509,43 @@ def _extra_env_lines(step: StepSpec) -> list[str]:
 def _run_step_lines(step: StepSpec, is_foreach_body: bool) -> list[str]:
     """Lines that invoke ``_run_cmd(_step_cmd(...))`` (no leading indent)."""
     indent = "    "
+    max_retries = step.max_user_code_retries
+
+    def _step_cmd_args(retry_var: str) -> list[str]:
+        args = [
+            f"{step.name!r}, run_id, task_id, input_paths,",
+            f"retry_count={retry_var},",
+            f"max_user_code_retries={max_retries:d},",
+        ]
+        if is_foreach_body:
+            args.append("split_index=split_index,")
+        return args
+
+    if max_retries == 0:
+        lines = ["_run_cmd(_step_cmd("]
+        for arg in _step_cmd_args("0"):
+            lines.append(indent + arg)
+        lines.append("), extra_env=_extra_env)")
+        return lines
+
+    # Generate a retry loop for steps with @retry(times=N).
+    # On each attempt, pass the current retry_count to the step subprocess
+    # so Metaflow's ``current.retry_count`` is set correctly.
     lines = [
-        "_run_cmd(_step_cmd(",
-        indent + f"{step.name!r}, run_id, task_id, input_paths,",
-        indent + f"max_user_code_retries={step.max_user_code_retries:d},",
+        f"_max_retries: int = {max_retries:d}",
+        "for _attempt in range(_max_retries + 1):",
+        indent + "try:",
+        indent + indent + "_run_cmd(_step_cmd(",
     ]
-    if is_foreach_body:
-        lines.append(indent + "split_index=split_index,")
-    lines.append("), extra_env=_extra_env)")
+    for arg in _step_cmd_args("_attempt"):
+        lines.append(indent + indent + indent + arg)
+    lines += [
+        indent + indent + "), extra_env=_extra_env)",
+        indent + indent + "break",
+        indent + "except subprocess.CalledProcessError:",
+        indent + indent + "if _attempt >= _max_retries:",
+        indent + indent + indent + "raise",
+    ]
     return lines
 
 
@@ -531,12 +601,25 @@ def _render_task(
 # ---------------------------------------------------------------------------
 
 
-def _render_foreach_dynamic(foreach_step: StepSpec, body_step: StepSpec) -> str:
-    """Return a ``@dynamic`` function that fans out the foreach body tasks."""
+def _render_foreach_dynamic(
+    foreach_step: StepSpec,
+    body_step: StepSpec,
+    inner_join_step: StepSpec | None = None,
+) -> str:
+    """Return a ``@dynamic`` function that fans out the foreach body tasks.
+
+    If *inner_join_step* is supplied, the body step is itself a foreach.  In
+    that case the expander also calls the inner-level ``@dynamic`` expander and
+    runs the inner join step per outer iteration, returning the inner-join task
+    IDs so that the outer join step can read from them.
+    """
     fn_name = f"_foreach_{foreach_step.name}_dynamic"
     body_task = _task_fn(body_step.name)
     step_repr = repr(foreach_step.name)
-    return f'''\
+
+    if inner_join_step is None:
+        # Simple (non-nested) foreach: fan out body tasks and return their IDs.
+        return f'''\
 @dynamic(**_TASK_KWARGS)
 def {fn_name}(run_id: str, foreach_result_json: str) -> List[str]:
     """Fan out {step_repr} body tasks in parallel."""
@@ -548,6 +631,37 @@ def {fn_name}(run_id: str, foreach_result_json: str) -> List[str]:
         _tid = {body_task}(run_id=run_id, prev_task_id=_foreach_task_id, split_index=_i)
         _task_ids.append(_tid)
     return _task_ids'''
+
+    # Nested foreach: body step is itself a foreach.
+    # For each outer split, run the body task (which is a foreach step), fan out
+    # its inner body tasks via the inner @dynamic, then run the inner join step.
+    # Return the inner-join task IDs so the outer join can read from them.
+    inner_dynamic_fn = f"_foreach_{body_step.name}_dynamic"
+    inner_join_task = _task_fn(inner_join_step.name)
+    return f'''\
+@dynamic(**_TASK_KWARGS)
+def {fn_name}(run_id: str, foreach_result_json: str) -> List[str]:
+    """Fan out {step_repr} body tasks (nested foreach) in parallel."""
+    _info = json.loads(foreach_result_json)
+    _foreach_task_id: str = _info['task_id']
+    _num_splits: int = int(_info['num_splits'])
+    _inner_join_tids: List[str] = []
+    for _i in range(_num_splits):
+        # Run the body step (itself a foreach): returns foreach_result_json for
+        # the inner level.
+        _inner_foreach_json = {body_task}(
+            run_id=run_id, prev_task_id=_foreach_task_id, split_index=_i
+        )
+        # Fan out the inner body tasks and collect their IDs.
+        _inner_body_tids = {inner_dynamic_fn}(
+            run_id=run_id, foreach_result_json=_inner_foreach_json
+        )
+        # Run the inner join for this outer iteration.
+        _inner_join_tid = {inner_join_task}(
+            run_id=run_id, _body_task_ids=_inner_body_tids
+        )
+        _inner_join_tids.append(_inner_join_tid)
+    return _inner_join_tids'''
 
 
 # ---------------------------------------------------------------------------

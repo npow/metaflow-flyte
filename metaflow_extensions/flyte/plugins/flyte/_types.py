@@ -110,3 +110,4 @@ class FlyteFlowConfig:
     flow_name: str = ""
     project_info: dict[str, str] | None = None  # {"name": ..., "flow_name": ..., "branch": ...}
     flow_config_value: str | None = None  # JSON-serialized METAFLOW_FLOW_CONFIG_VALUE
+    environment_type: str = "local"  # value of --environment top-level arg (e.g. "conda")

@@ -70,6 +70,7 @@ class FlyteCompiler:
             flow_name=flow_name,
             project_info=project_info,
             flow_config_value=self._extract_flow_config_value(flow),
+            environment_type=getattr(environment, "TYPE", "local"),
         )
 
     def compile(self) -> str:
