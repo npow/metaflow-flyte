@@ -557,7 +557,12 @@ def trigger(
                     _pyflyte, "run", "--remote",
                     "--project", flyte_project,
                     "--domain", flyte_domain,
-                    "--copy", "all",
+                    # Do NOT use --copy: the task containers already have the
+                    # flow code baked in via the Docker image.  --copy all would
+                    # try to upload a local code bundle to the S3 backend and then
+                    # download it inside the task container, which is unnecessary
+                    # and can fail if the S3 endpoint URL differs between the host
+                    # and the cluster.
                     "--wait",  # block until execution completes
                 ]
                 if image:
