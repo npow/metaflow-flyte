@@ -258,6 +258,11 @@ _PARAM_TYPE_MAP = {
 def _extract_parameters(flow: Any) -> list[ParameterSpec]:
     params: list[ParameterSpec] = []
     for _, param in flow._get_parameters():
+        # Skip Config parameters — they are resolved at compile time and
+        # embedded via METAFLOW_FLOW_CONFIG_VALUE; the Metaflow `init` command
+        # does not accept Config options as CLI flags.
+        if getattr(param, "IS_CONFIG_PARAMETER", False):
+            continue
         raw_default = _param_kwarg(param, "default")
         default = deploy_time_eval(raw_default)
         type_name = _PARAM_TYPE_MAP.get(type(default).__name__, "str")

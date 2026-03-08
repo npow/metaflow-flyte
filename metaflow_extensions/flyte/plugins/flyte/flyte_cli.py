@@ -125,6 +125,23 @@ def create(
         _env_keys = ("METAFLOW_DEFAULT_METADATA", "METAFLOW_DEFAULT_DATASTORE",
                      "METAFLOW_DEFAULT_ENVIRONMENT", "METAFLOW_DATASTORE_SYSROOT_LOCAL")
         _saved_env = {k: os.environ[k] for k in _env_keys if k in os.environ}
+        # Also capture METAFLOW_FLOW_CONFIG_VALUE so that the trigger subprocess
+        # (which re-imports the flow but may lack the --config-value CLI flag)
+        # uses the same compile-time config baked into the generated workflow file.
+        # Read it from the generated file rather than os.environ so we always get
+        # the value that was actually written (avoids stale env from a prior run).
+        try:
+            import re as _re
+            with open(os.path.abspath(output_file), "r") as _wf:
+                _wf_src = _wf.read()
+            _m = _re.search(r"^FLOW_CONFIG_VALUE: str \| None = (.+)$", _wf_src, _re.MULTILINE)
+            if _m:
+                import ast as _ast
+                _fcv = _ast.literal_eval(_m.group(1))
+                if _fcv:
+                    _saved_env["METAFLOW_FLOW_CONFIG_VALUE"] = _fcv
+        except Exception:
+            pass
         _additional_info = {
             "workflow_file": os.path.abspath(output_file),
             "flyte_project": flyte_project,

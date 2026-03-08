@@ -69,12 +69,40 @@ class FlyteCompiler:
             tags=tuple(all_tags),
             flow_name=flow_name,
             project_info=project_info,
+            flow_config_value=self._extract_flow_config_value(flow),
         )
 
     def compile(self) -> str:
         """Return the full source of the generated Flyte workflow Python file."""
         spec = analyze_graph(self._graph, self._flow)
         return generate_flyte_file(spec, self._cfg)
+
+    @staticmethod
+    def _extract_flow_config_value(flow: Any) -> str | None:
+        """Extract compile-time config values from the flow as a JSON string.
+
+        Mirrors what the Airflow and Prefect deployers do: reads
+        ``flow._flow_state[FlowStateItems.CONFIGS]`` at compile time and
+        returns a JSON string so it can be embedded as
+        ``METAFLOW_FLOW_CONFIG_VALUE`` in the generated file, propagating
+        config_expr / @project config to every step subprocess at runtime.
+        """
+        import json
+
+        try:
+            from metaflow.flowspec import FlowStateItems
+
+            flow_configs = flow._flow_state[FlowStateItems.CONFIGS]
+            config_env = {
+                name: value
+                for name, (value, _is_plain) in flow_configs.items()
+                if value is not None
+            }
+            if config_env:
+                return json.dumps(config_env)
+        except Exception:
+            pass
+        return None
 
     def _get_project(self) -> dict[str, str] | None:
         """Extract @project decorator info and compute the project-aware flow name."""

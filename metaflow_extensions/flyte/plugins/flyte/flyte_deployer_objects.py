@@ -153,6 +153,40 @@ class FlyteDeployedFlow(DeployedFlow):
         # tuple; a multi-element tuple fails the check.
         run_params = [f"{k}={v}" for k, v in kwargs.items()]
 
+        # Apply saved_env from create (includes METAFLOW_FLOW_CONFIG_VALUE) so
+        # the trigger subprocess recompiles the flow with the correct config.
+        # This is needed for the direct deploy→trigger path (not only from_deployment).
+        _additional_info = getattr(self.deployer, "additional_info", {}) or {}
+        _saved_env = _additional_info.get("saved_env", {})
+        if _saved_env:
+            import copy as _copy
+            import json as _json
+            _env = _copy.copy(dict(self.deployer.env_vars or {}))
+            _merged = dict(_saved_env)
+            # If METAFLOW_FLOW_CONFIG_VALUE is in saved_env, remove any config
+            # names that are already covered by --config (file-based) top-level
+            # kwargs so we don't trigger "both a value and a file" conflicts.
+            if "METAFLOW_FLOW_CONFIG_VALUE" in _merged:
+                _file_config_names = set()
+                for _cfg_pair in (self.deployer.top_level_kwargs.get("config") or []):
+                    try:
+                        _file_config_names.add(_cfg_pair[0])
+                    except (IndexError, TypeError):
+                        pass
+                if _file_config_names:
+                    try:
+                        _fcv = _json.loads(_merged["METAFLOW_FLOW_CONFIG_VALUE"])
+                        for _k in _file_config_names:
+                            _fcv.pop(_k, None)
+                        if _fcv:
+                            _merged["METAFLOW_FLOW_CONFIG_VALUE"] = _json.dumps(_fcv)
+                        else:
+                            del _merged["METAFLOW_FLOW_CONFIG_VALUE"]
+                    except Exception:
+                        pass
+            _env.update(_merged)
+            self.deployer.env_vars = _env
+
         with temporary_fifo() as (attribute_file_path, attribute_file_fd):
             # Pass the plain flow class name (e.g. "HelloFlow"), not the JSON
             # recovery identifier stored in self.name, so that the trigger CLI

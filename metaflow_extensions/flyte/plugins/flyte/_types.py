@@ -109,3 +109,4 @@ class FlyteFlowConfig:
     # Project-aware flow name (e.g. "myproject.prod.MyFlow") or plain name
     flow_name: str = ""
     project_info: dict[str, str] | None = None  # {"name": ..., "flow_name": ..., "branch": ...}
+    flow_config_value: str | None = None  # JSON-serialized METAFLOW_FLOW_CONFIG_VALUE

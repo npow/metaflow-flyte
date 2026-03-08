@@ -318,6 +318,10 @@ WITH_DECORATORS: List[str] = {list(cfg.with_decorators)!r}
 # Raw @project branch passed via --branch (without "test."/"user." prefix).
 # Empty string means no explicit branch — @project defaults to user.<username>.
 PROJECT_BRANCH: str = {(cfg.project_info or {}).get("branch_raw", "")!r}
+# Compile-time config values serialised to JSON; injected as
+# METAFLOW_FLOW_CONFIG_VALUE into every step subprocess so that config_expr
+# and @project decorators evaluate correctly at task runtime.
+FLOW_CONFIG_VALUE: str | None = {cfg.flow_config_value!r}
 
 # Task decorator factory — applies IMAGE and enables Deck when set.
 _TASK_KWARGS = {{'container_image': IMAGE, 'enable_deck': True}} if IMAGE else {{'enable_deck': True}}
@@ -450,6 +454,12 @@ def _extra_env_lines(step: StepSpec) -> list[str]:
             f"foreach_path: str = _foreach_info_path(run_id, {step.name!r})",
             "_extra_env['METAFLOW_FLYTE_FOREACH_INFO_PATH'] = foreach_path",
         ]
+    # Propagate compile-time config values so that config_expr / @project
+    # decorators evaluate correctly at task runtime (mirrors Airflow/Prefect).
+    lines += [
+        "if FLOW_CONFIG_VALUE:",
+        "    _extra_env['METAFLOW_FLOW_CONFIG_VALUE'] = FLOW_CONFIG_VALUE",
+    ]
     if step.env_vars:
         lines.append(f"_extra_env.update({dict(step.env_vars)!r})")
     return lines
