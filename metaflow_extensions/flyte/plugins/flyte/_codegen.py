@@ -278,7 +278,7 @@ def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
     ]
 
     for step in spec.steps:
-        parts.append(_render_task(step, spec, foreach_body, foreach_body_set, condition_branch_set))
+        parts.append(_render_task(step, spec, foreach_body, foreach_body_set, condition_branch_set, nested_foreach_joins))
         if step.node_type == NodeType.FOREACH:
             body_step = step_by_name[foreach_body[step.name]]
             inner_join_name = nested_foreach_joins.get(step.name)
@@ -422,6 +422,10 @@ def _task_signature(step: StepSpec, spec: FlowSpec, is_start: bool, is_foreach_b
         return f"def {fn}(run_id: str{in_args}) -> str:"
     if step.is_condition_join:
         return f"def {fn}(run_id: str, _branch_result_json: str) -> str:"
+    # A step that is both a foreach fan-out AND a foreach body (nested foreach)
+    # must accept ``split_index`` so the outer @dynamic can invoke it per-split.
+    if step.node_type == NodeType.FOREACH and is_foreach_body:
+        return f"def {fn}(run_id: str, prev_task_id: str, split_index: int = 0) -> str:"
     if step.node_type in (NodeType.SPLIT_SWITCH, NodeType.FOREACH):
         return f"def {fn}(run_id: str, prev_task_id: str) -> str:"
     if is_foreach_body:
@@ -435,6 +439,7 @@ def _input_paths_lines(
     spec: FlowSpec,
     foreach_body: dict[str, str],
     is_start: bool,
+    nested_foreach_joins: dict[str, str] | None = None,
 ) -> list[str]:
     """Lines that compute ``input_paths`` for a step (no leading indent)."""
     if is_start:
@@ -443,7 +448,15 @@ def _input_paths_lines(
         ]
     if step.is_foreach_join:
         foreach_step_name = step.split_parents[-1]
-        body_name = foreach_body.get(foreach_step_name) or step.in_funcs[0]
+        # For outer joins in a nested-foreach, the body task IDs that arrive via
+        # ``_body_task_ids`` are actually the inner-join task IDs (produced by
+        # the outer @dynamic expander).  Use the inner-join step name so that
+        # Metaflow reads the correct artifacts from the inner-join tasks.
+        nfj = nested_foreach_joins or {}
+        if foreach_step_name in nfj:
+            body_name = nfj[foreach_step_name]
+        else:
+            body_name = foreach_body.get(foreach_step_name) or step.in_funcs[0]
         return [
             'input_paths: str = ",".join('
             f'f"{{run_id}}/{body_name}/{{tid}}" for tid in _body_task_ids)'
@@ -474,6 +487,12 @@ def _start_init_lines(spec: FlowSpec) -> list[str]:
         indent + '"--datastore", DATASTORE_TYPE,',
         indent + '"--metadata", METADATA_TYPE,',
         indent + '"--no-pylint",',
+        "]",
+        # Propagate the execution environment so that environment-aware decorators
+        # (e.g. @conda_base) validate correctly during init.
+        'if ENVIRONMENT_TYPE and ENVIRONMENT_TYPE != "local":',
+        indent + '_init_cmd += ["--environment", ENVIRONMENT_TYPE]',
+        "_init_cmd += [",
         indent + '"init",',
         indent + '"--run-id", run_id,',
         indent + '"--task-id", param_task_id,',
@@ -572,6 +591,7 @@ def _render_task(
     foreach_body: dict[str, str],
     foreach_body_set: set[str],
     condition_branch_set: set[str],
+    nested_foreach_joins: dict[str, str] | None = None,
 ) -> str:
     """Return the full ``@_mf_task(...)`` function source for *step*."""
     is_start = step.name == "start"
@@ -581,7 +601,7 @@ def _render_task(
 
     body_lines = (
         ["task_id: str = uuid.uuid4().hex[:16]"]
-        + _input_paths_lines(step, spec, foreach_body, is_start)
+        + _input_paths_lines(step, spec, foreach_body, is_start, nested_foreach_joins)
         + _extra_env_lines(step)
         + _run_step_lines(step, is_foreach_body)
         + [f"_emit_deck(run_id, {step.name!r}, task_id)"]
@@ -713,8 +733,13 @@ def _render_workflow(
     foreach_body_set: set[str],
     condition_branches: dict[str, frozenset[str]],
     condition_branch_set: set[str],
+    nested_foreach_joins: dict[str, str] | None = None,
+    steps_consumed_in_dynamic: set[str] | None = None,
 ) -> str:
     """Return the ``@workflow`` function source."""
+    nfj = nested_foreach_joins or {}
+    consumed = steps_consumed_in_dynamic or set()
+
     sig = _workflow_signature(spec.parameters)
     lines = [
         "@workflow",
@@ -730,6 +755,12 @@ def _render_workflow(
         var = f"_tid_{step.name}"
         is_start = step.name == "start"
 
+        if step.name in foreach_body_set:
+            continue  # already registered / executed inside the outer foreach block
+
+        if step.name in consumed:
+            continue  # executed inside an outer @dynamic expander (e.g. inner join)
+
         if step.node_type == NodeType.FOREACH:
             foreach_result_var = f"_foreach_result_json_{step.name}"
             if is_start:
@@ -740,17 +771,22 @@ def _render_workflow(
                 lines.append(
                     f"    {foreach_result_var} = {_task_fn(step.name)}(run_id=run_id, prev_task_id={task_id_vars[parent]})"
                 )
-            body_name = foreach_body[step.name]
-            body_tids_var = f"_body_tids_{body_name}"
+            # For nested foreach, the outer @dynamic returns the inner-join task IDs.
+            # Name the variable after the inner-join step so the outer join's
+            # body_var lookup resolves correctly.
+            if step.name in nfj:
+                inner_join_name = nfj[step.name]
+                body_tids_var = f"_body_tids_{inner_join_name}"
+                task_id_vars[inner_join_name] = body_tids_var
+            else:
+                body_name = foreach_body[step.name]
+                body_tids_var = f"_body_tids_{body_name}"
+                task_id_vars[body_name] = body_tids_var
             lines.append(
                 f"    {body_tids_var} = _foreach_{step.name}_dynamic(run_id=run_id, foreach_result_json={foreach_result_var})"
             )
             task_id_vars[step.name] = foreach_result_var
-            task_id_vars[body_name] = body_tids_var
             continue
-
-        if step.name in foreach_body_set:
-            continue  # already registered inside the foreach block above
 
         if step.node_type == NodeType.SPLIT_SWITCH:
             switch_result_var = f"_cond_result_json_{step.name}"
@@ -780,7 +816,12 @@ def _render_workflow(
 
         elif step.is_foreach_join:
             foreach_step_name = step.split_parents[-1]
-            body_var = "_body_tids_{}".format(foreach_body.get(foreach_step_name, "body"))
+            # For nested foreach: the outer @dynamic returns inner-join task IDs,
+            # so use the inner-join step name as the tids-var key.
+            if foreach_step_name in nfj:
+                body_var = f"_body_tids_{nfj[foreach_step_name]}"
+            else:
+                body_var = "_body_tids_{}".format(foreach_body.get(foreach_step_name, "body"))
             lines.append(
                 f"    {var} = {_task_fn(step.name)}(run_id=run_id, _body_task_ids={body_var})"
             )
