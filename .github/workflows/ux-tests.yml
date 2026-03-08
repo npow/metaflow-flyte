@@ -30,7 +30,6 @@ jobs:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
-          conda: "true"
           pytest-args: "-n 4 -v --tb=short --timeout=120 --exec-mode runner --cov-fail-under=0"
           ux-test-config: |
             backends:
