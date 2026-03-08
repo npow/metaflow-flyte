@@ -620,7 +620,38 @@ def trigger(
 
                 env = {**os.environ, "FLYTECTL_CONFIG": _flyte_cfg_file.name}
                 obj.echo("Triggering (remote): {}".format(" ".join(cmd)), bold=True)  # type: ignore[attr-defined]
-                result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+                # Stream pyflyte output to our stdout in real-time so CI logs show
+                # progress, while also capturing all output for execution-ID parsing.
+                import threading as _threading
+                _buf_lock = _threading.Lock()
+                _captured: list[str] = []
+
+                def _stream_and_capture(src, echo_dst):
+                    for line in iter(src.readline, ""):
+                        with _buf_lock:
+                            _captured.append(line)
+                        echo_dst.write(line)
+                        echo_dst.flush()
+                    src.close()
+
+                _proc = subprocess.Popen(cmd, env=env, text=True,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                _t_out = _threading.Thread(
+                    target=_stream_and_capture, args=(_proc.stdout, sys.stdout), daemon=True)
+                _t_err = _threading.Thread(
+                    target=_stream_and_capture, args=(_proc.stderr, sys.stderr), daemon=True)
+                _t_out.start()
+                _t_err.start()
+                _proc.wait()
+                _t_out.join()
+                _t_err.join()
+                _all_output = "".join(_captured)
+
+                class _RunResult:
+                    returncode = _proc.returncode
+                    stdout = ""
+                    stderr = _all_output
+                result = _RunResult()
             finally:
                 try:
                     os.unlink(_flyte_cfg_file.name)
