@@ -11,7 +11,7 @@ class ForeachFlow(FlowSpec):
 
     @step
     def body(self):
-        self.result = "processed: %s" % self.input
+        self.result = f"processed: {self.input}"
         self.next(self.join)
 
     @step

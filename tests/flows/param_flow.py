@@ -8,7 +8,7 @@ class ParamFlow(FlowSpec):
 
     @step
     def start(self):
-        self.message = "hello, %s" % self.greeting
+        self.message = f"hello, {self.greeting}"
         self.next(self.end)
 
     @step

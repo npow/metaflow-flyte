@@ -454,7 +454,7 @@ def _compile(flow_path: Path, out: Path, extra_args: list[str] | None = None) ->
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     assert result.returncode == 0, (
-        "flyte create failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
+        f"flyte create failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     )
 
 

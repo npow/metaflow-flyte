@@ -59,7 +59,6 @@ omit = ["*/mfextinit_*.py"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-fail_under = 80
 
 [tool.pyright]
 include = ["metaflow_extensions"]

@@ -7,12 +7,11 @@ import warnings
 import pytest
 
 from metaflow_extensions.flyte.plugins.flyte._graph import (
-    _validate,
     _is_condition_join,
+    _validate,
 )
 from metaflow_extensions.flyte.plugins.flyte._types import NodeType
 from metaflow_extensions.flyte.plugins.flyte.exception import NotSupportedException
-
 
 # ---------------------------------------------------------------------------
 # Minimal stubs for graph nodes and flow objects

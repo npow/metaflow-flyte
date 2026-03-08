@@ -30,8 +30,8 @@ join (condition)              ``@task`` accepting JSON from the dynamic router
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Sequence
 
 from metaflow_extensions.flyte.plugins.flyte._types import (
     FlowSpec,
@@ -42,7 +42,6 @@ from metaflow_extensions.flyte.plugins.flyte._types import (
     TriggerOnFinishSpec,
     TriggerSpec,
 )
-
 
 # ---------------------------------------------------------------------------
 # Static sections — embedded verbatim in every generated file
@@ -261,7 +260,7 @@ def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
     for tof in spec.trigger_on_finishes:
         parts.append(_render_trigger_on_finish_launch_plan(spec, tof))
 
-    parts.append("if __name__ == '__main__':\n    %s()" % _wf_fn(spec.name))
+    parts.append(f"if __name__ == '__main__':\n    {_wf_fn(spec.name)}()")
 
     return "\n\n\n".join(parts)
 
@@ -331,26 +330,26 @@ def _resources_expr(step: StepSpec) -> str | None:
         return None
     args = []
     if step.resource_cpu is not None:
-        args.append("cpu=%r" % str(step.resource_cpu))
+        args.append(f"cpu={str(step.resource_cpu)!r}")
     if step.resource_memory is not None:
         # Metaflow memory is in MB; Flyte uses string like "1024Mi"
-        args.append("mem=%r" % ("%dMi" % step.resource_memory))
+        args.append(f"mem={f'{step.resource_memory}Mi'!r}")
     if step.resource_gpu is not None:
-        args.append("gpu=%r" % str(step.resource_gpu))
-    return "Resources(%s)" % ", ".join(args)
+        args.append(f"gpu={str(step.resource_gpu)!r}")
+    return "Resources({})".format(", ".join(args))
 
 
 def _task_decorator(step: StepSpec) -> str:
     """Build the ``@_mf_task(...)`` decorator line for a step."""
-    parts = ["retries=%d" % step.max_user_code_retries]
+    parts = [f"retries={step.max_user_code_retries:d}"]
     if step.timeout_seconds is not None:
-        parts.append("timeout=timedelta(seconds=%d)" % step.timeout_seconds)
+        parts.append(f"timeout=timedelta(seconds={step.timeout_seconds:d})")
     res = _resources_expr(step)
     if res is not None:
         # Translate @resources to native Flyte resource requests/limits.
-        parts.append("requests=%s" % res)
-        parts.append("limits=%s" % res)
-    return "@_mf_task(%s)" % ", ".join(parts)
+        parts.append(f"requests={res}")
+        parts.append(f"limits={res}")
+    return "@_mf_task({})".format(", ".join(parts))
 
 
 def _task_signature(step: StepSpec, spec: FlowSpec, is_start: bool, is_foreach_body: bool) -> str:
@@ -358,23 +357,23 @@ def _task_signature(step: StepSpec, spec: FlowSpec, is_start: bool, is_foreach_b
     fn = _task_fn(step.name)
     if is_start:
         param_args = "".join(
-            ", _param_%s: %s = %r" % (p.name, p.type_name, p.default)
+            f", _param_{p.name}: {p.type_name} = {p.default!r}"
             for p in spec.parameters
         )
-        return "def %s(run_id: str%s) -> str:" % (fn, param_args)
+        return f"def {fn}(run_id: str{param_args}) -> str:"
     if step.is_foreach_join:
-        return "def %s(run_id: str, _body_task_ids: List[str]) -> str:" % fn
+        return f"def {fn}(run_id: str, _body_task_ids: List[str]) -> str:"
     if step.is_split_join:
-        in_args = "".join(", _in_%s: str" % p for p in step.in_funcs)
-        return "def %s(run_id: str%s) -> str:" % (fn, in_args)
+        in_args = "".join(f", _in_{p}: str" for p in step.in_funcs)
+        return f"def {fn}(run_id: str{in_args}) -> str:"
     if step.is_condition_join:
-        return "def %s(run_id: str, _branch_result_json: str) -> str:" % fn
+        return f"def {fn}(run_id: str, _branch_result_json: str) -> str:"
     if step.node_type in (NodeType.SPLIT_SWITCH, NodeType.FOREACH):
-        return "def %s(run_id: str, prev_task_id: str) -> str:" % fn
+        return f"def {fn}(run_id: str, prev_task_id: str) -> str:"
     if is_foreach_body:
-        return "def %s(run_id: str, prev_task_id: str, split_index: int = 0) -> str:" % fn
+        return f"def {fn}(run_id: str, prev_task_id: str, split_index: int = 0) -> str:"
     # linear, split, end, condition branch
-    return "def %s(run_id: str, prev_task_id: str) -> str:" % fn
+    return f"def {fn}(run_id: str, prev_task_id: str) -> str:"
 
 
 def _input_paths_lines(
@@ -393,13 +392,13 @@ def _input_paths_lines(
         body_name = foreach_body.get(foreach_step_name) or step.in_funcs[0]
         return [
             'input_paths: str = ",".join('
-            'f"{run_id}/%s/{tid}" for tid in _body_task_ids)' % body_name
+            f'f"{{run_id}}/{body_name}/{{tid}}" for tid in _body_task_ids)'
         ]
     if step.is_split_join:
         joined = ", ".join(
-            'f"{run_id}/%s/{_in_%s}"' % (p, p) for p in step.in_funcs
+            f'f"{{run_id}}/{p}/{{_in_{p}}}"' for p in step.in_funcs
         )
-        return ["input_paths: str = \",\".join([%s])" % joined]
+        return [f"input_paths: str = \",\".join([{joined}])"]
     if step.is_condition_join:
         return [
             "_branch_info = json.loads(_branch_result_json)",
@@ -408,28 +407,28 @@ def _input_paths_lines(
             'input_paths: str = f"{run_id}/{_branch_step_name}/{_branch_tid}"',
         ]
     parent = step.in_funcs[0] if step.in_funcs else "start"
-    return ['input_paths: str = f"{run_id}/%s/{prev_task_id}"' % parent]
+    return [f'input_paths: str = f"{{run_id}}/{parent}/{{prev_task_id}}"']
 
 
 def _start_init_lines(spec: FlowSpec) -> list[str]:
     """Lines that run ``metaflow init`` before the start step (no leading indent)."""
-    I = "    "
+    indent = "    "
     lines = [
         "param_task_id: str = uuid.uuid4().hex[:16]",
         "_init_cmd: list[str] = [",
-        I + "sys.executable, FLOW_FILE,",
-        I + '"--datastore", DATASTORE_TYPE,',
-        I + '"--metadata", METADATA_TYPE,',
-        I + '"--no-pylint",',
-        I + '"init",',
-        I + '"--run-id", run_id,',
-        I + '"--task-id", param_task_id,',
+        indent + "sys.executable, FLOW_FILE,",
+        indent + '"--datastore", DATASTORE_TYPE,',
+        indent + '"--metadata", METADATA_TYPE,',
+        indent + '"--no-pylint",',
+        indent + '"init",',
+        indent + '"--run-id", run_id,',
+        indent + '"--task-id", param_task_id,',
         "]",
         "for _tag in TAGS:",
-        I + '_init_cmd += ["--tag", _tag]',
+        indent + '_init_cmd += ["--tag", _tag]',
     ]
     for p in spec.parameters:
-        lines.append('_init_cmd += ["--%s", str(_param_%s)]' % (p.name, p.name))
+        lines.append(f'_init_cmd += ["--{p.name}", str(_param_{p.name})]')
     lines.append("_run_cmd(_init_cmd)")
     return lines
 
@@ -439,24 +438,24 @@ def _extra_env_lines(step: StepSpec) -> list[str]:
     lines = ["_extra_env: dict[str, str] = _flyte_env()"]
     if step.node_type == NodeType.FOREACH:
         lines += [
-            "foreach_path: str = _foreach_info_path(run_id, %r)" % step.name,
+            f"foreach_path: str = _foreach_info_path(run_id, {step.name!r})",
             "_extra_env['METAFLOW_FLYTE_FOREACH_INFO_PATH'] = foreach_path",
         ]
     if step.env_vars:
-        lines.append("_extra_env.update(%r)" % dict(step.env_vars))
+        lines.append(f"_extra_env.update({dict(step.env_vars)!r})")
     return lines
 
 
 def _run_step_lines(step: StepSpec, is_foreach_body: bool) -> list[str]:
     """Lines that invoke ``_run_cmd(_step_cmd(...))`` (no leading indent)."""
-    I = "    "
+    indent = "    "
     lines = [
         "_run_cmd(_step_cmd(",
-        I + "%r, run_id, task_id, input_paths," % step.name,
-        I + "max_user_code_retries=%d," % step.max_user_code_retries,
+        indent + f"{step.name!r}, run_id, task_id, input_paths,",
+        indent + f"max_user_code_retries={step.max_user_code_retries:d},",
     ]
     if is_foreach_body:
-        lines.append(I + "split_index=split_index,")
+        lines.append(indent + "split_index=split_index,")
     lines.append("), extra_env=_extra_env)")
     return lines
 
@@ -470,11 +469,11 @@ def _return_lines(step: StepSpec, is_condition_branch: bool) -> list[str]:
         ]
     if step.node_type == NodeType.SPLIT_SWITCH:
         return [
-            "_branch_taken: str = _read_condition_branch(run_id, %r, task_id)" % step.name,
+            f"_branch_taken: str = _read_condition_branch(run_id, {step.name!r}, task_id)",
             "return json.dumps({'task_id': task_id, 'branch_taken': _branch_taken})",
         ]
     if is_condition_branch:
-        return ["return json.dumps({'branch_step': %r, 'task_id': task_id})" % step.name]
+        return [f"return json.dumps({{'branch_step': {step.name!r}, 'task_id': task_id}})"]
     return ["return task_id"]
 
 
@@ -489,21 +488,21 @@ def _render_task(
     is_start = step.name == "start"
     is_foreach_body = step.name in foreach_body_set
     is_condition_branch = step.name in condition_branch_set
-    I = "    "
+    indent = "    "
 
     body_lines = (
         ["task_id: str = uuid.uuid4().hex[:16]"]
         + _input_paths_lines(step, spec, foreach_body, is_start)
         + _extra_env_lines(step)
         + _run_step_lines(step, is_foreach_body)
-        + ["_emit_deck(run_id, %r, task_id)" % step.name]
+        + [f"_emit_deck(run_id, {step.name!r}, task_id)"]
         + _return_lines(step, is_condition_branch)
     )
 
     lines = [
         _task_decorator(step),
         _task_signature(step, spec, is_start, is_foreach_body),
-    ] + [I + ln for ln in body_lines]
+    ] + [indent + ln for ln in body_lines]
 
     return "\n".join(lines)
 
@@ -515,7 +514,7 @@ def _render_task(
 
 def _render_foreach_dynamic(foreach_step: StepSpec, body_step: StepSpec) -> str:
     """Return a ``@dynamic`` function that fans out the foreach body tasks."""
-    fn_name = "_foreach_%s_dynamic" % foreach_step.name
+    fn_name = f"_foreach_{foreach_step.name}_dynamic"
     body_task = _task_fn(body_step.name)
     step_repr = repr(foreach_step.name)
     return f'''\
@@ -544,7 +543,7 @@ def _render_condition_dynamic(switch_step: StepSpec, branch_steps: list[StepSpec
     This router inspects ``branch_taken`` at runtime and calls only the matching
     branch task, returning its JSON so the join step can locate the artifact.
     """
-    fn_name = "_cond_%s_router" % switch_step.name
+    fn_name = f"_cond_{switch_step.name}_router"
     step_repr = repr(switch_step.name)
     lines = [
         "@dynamic(**_TASK_KWARGS)",
@@ -557,12 +556,12 @@ def _render_condition_dynamic(switch_step: StepSpec, branch_steps: list[StepSpec
     branch_names = [bs.name for bs in branch_steps]
     for i, name in enumerate(branch_names):
         keyword = "if" if i == 0 else "elif"
-        lines.append("    %s _branch_taken == %r:" % (keyword, name))
-        lines.append("        return %s(run_id=run_id, prev_task_id=_switch_task_id)" % _task_fn(name))
+        lines.append(f"    {keyword} _branch_taken == {name!r}:")
+        lines.append(f"        return {_task_fn(name)}(run_id=run_id, prev_task_id=_switch_task_id)")
     if branch_names:
         lines += [
             "    else:",
-            "        return %s(run_id=run_id, prev_task_id=_switch_task_id)" % _task_fn(branch_names[0]),
+            f"        return {_task_fn(branch_names[0])}(run_id=run_id, prev_task_id=_switch_task_id)",
         ]
     else:
         lines.append("    return json.dumps({'branch_step': '', 'task_id': _switch_task_id})")
@@ -586,34 +585,32 @@ def _render_workflow(
     sig = _workflow_signature(spec.parameters)
     lines = [
         "@workflow",
-        "def %s(%s) -> None:" % (_wf_fn(spec.name), sig),
+        f"def {_wf_fn(spec.name)}({sig}) -> None:",
     ]
     if spec.description:
-        lines.append("    %r" % spec.description)
+        lines.append(f"    {spec.description!r}")
     lines.append("    run_id = _mf_generate_run_id(origin_run_id=origin_run_id)")
 
     task_id_vars: dict[str, str] = {}  # step_name -> Python variable holding task_id
 
     for step in spec.steps:
-        var = "_tid_%s" % step.name
+        var = f"_tid_{step.name}"
         is_start = step.name == "start"
 
         if step.node_type == NodeType.FOREACH:
-            foreach_result_var = "_foreach_result_json_%s" % step.name
+            foreach_result_var = f"_foreach_result_json_{step.name}"
             if is_start:
-                pkw = "".join(", _param_%s=%s" % (p.name, p.name) for p in spec.parameters)
-                lines.append("    %s = %s(run_id=run_id%s)" % (foreach_result_var, _task_fn(step.name), pkw))
+                pkw = "".join(f", _param_{p.name}={p.name}" for p in spec.parameters)
+                lines.append(f"    {foreach_result_var} = {_task_fn(step.name)}(run_id=run_id{pkw})")
             else:
                 parent = step.in_funcs[0]
                 lines.append(
-                    "    %s = %s(run_id=run_id, prev_task_id=%s)"
-                    % (foreach_result_var, _task_fn(step.name), task_id_vars[parent])
+                    f"    {foreach_result_var} = {_task_fn(step.name)}(run_id=run_id, prev_task_id={task_id_vars[parent]})"
                 )
             body_name = foreach_body[step.name]
-            body_tids_var = "_body_tids_%s" % body_name
+            body_tids_var = f"_body_tids_{body_name}"
             lines.append(
-                "    %s = _foreach_%s_dynamic(run_id=run_id, foreach_result_json=%s)"
-                % (body_tids_var, step.name, foreach_result_var)
+                f"    {body_tids_var} = _foreach_{step.name}_dynamic(run_id=run_id, foreach_result_json={foreach_result_var})"
             )
             task_id_vars[step.name] = foreach_result_var
             task_id_vars[body_name] = body_tids_var
@@ -623,20 +620,18 @@ def _render_workflow(
             continue  # already registered inside the foreach block above
 
         if step.node_type == NodeType.SPLIT_SWITCH:
-            switch_result_var = "_cond_result_json_%s" % step.name
+            switch_result_var = f"_cond_result_json_{step.name}"
             if is_start:
-                pkw = "".join(", _param_%s=%s" % (p.name, p.name) for p in spec.parameters)
-                lines.append("    %s = %s(run_id=run_id%s)" % (switch_result_var, _task_fn(step.name), pkw))
+                pkw = "".join(f", _param_{p.name}={p.name}" for p in spec.parameters)
+                lines.append(f"    {switch_result_var} = {_task_fn(step.name)}(run_id=run_id{pkw})")
             else:
                 parent = step.in_funcs[0]
                 lines.append(
-                    "    %s = %s(run_id=run_id, prev_task_id=%s)"
-                    % (switch_result_var, _task_fn(step.name), task_id_vars[parent])
+                    f"    {switch_result_var} = {_task_fn(step.name)}(run_id=run_id, prev_task_id={task_id_vars[parent]})"
                 )
-            routed_tid_var = "_cond_routed_tid_%s" % step.name
+            routed_tid_var = f"_cond_routed_tid_{step.name}"
             lines.append(
-                "    %s = _cond_%s_router(run_id=run_id, switch_result_json=%s)"
-                % (routed_tid_var, step.name, switch_result_var)
+                f"    {routed_tid_var} = _cond_{step.name}_router(run_id=run_id, switch_result_json={switch_result_var})"
             )
             task_id_vars[step.name] = switch_result_var
             for branch_name in condition_branches.get(step.name, set()):
@@ -647,35 +642,32 @@ def _render_workflow(
             continue  # handled inside the split-switch block above
 
         if is_start:
-            pkw = "".join(", _param_%s=%s" % (p.name, p.name) for p in spec.parameters)
-            lines.append("    %s = %s(run_id=run_id%s)" % (var, _task_fn(step.name), pkw))
+            pkw = "".join(f", _param_{p.name}={p.name}" for p in spec.parameters)
+            lines.append(f"    {var} = {_task_fn(step.name)}(run_id=run_id{pkw})")
 
         elif step.is_foreach_join:
             foreach_step_name = step.split_parents[-1]
-            body_var = "_body_tids_%s" % foreach_body.get(foreach_step_name, "body")
+            body_var = "_body_tids_{}".format(foreach_body.get(foreach_step_name, "body"))
             lines.append(
-                "    %s = %s(run_id=run_id, _body_task_ids=%s)"
-                % (var, _task_fn(step.name), body_var)
+                f"    {var} = {_task_fn(step.name)}(run_id=run_id, _body_task_ids={body_var})"
             )
 
         elif step.is_split_join:
-            in_kwargs = "".join(", _in_%s=%s" % (p, task_id_vars[p]) for p in step.in_funcs)
-            lines.append("    %s = %s(run_id=run_id%s)" % (var, _task_fn(step.name), in_kwargs))
+            in_kwargs = "".join(f", _in_{p}={task_id_vars[p]}" for p in step.in_funcs)
+            lines.append(f"    {var} = {_task_fn(step.name)}(run_id=run_id{in_kwargs})")
 
         elif step.is_condition_join:
             switch_step_name = _find_switch_step_for_join(step, condition_branches)
-            branch_result_var = "_cond_routed_tid_%s" % switch_step_name
+            branch_result_var = f"_cond_routed_tid_{switch_step_name}"
             lines.append(
-                "    %s = %s(run_id=run_id, _branch_result_json=%s)"
-                % (var, _task_fn(step.name), branch_result_var)
+                f"    {var} = {_task_fn(step.name)}(run_id=run_id, _branch_result_json={branch_result_var})"
             )
 
         else:
             # linear, split (not foreach/conditional), end
             parent = step.in_funcs[0] if step.in_funcs else "start"
             lines.append(
-                "    %s = %s(run_id=run_id, prev_task_id=%s)"
-                % (var, _task_fn(step.name), task_id_vars[parent])
+                f"    {var} = {_task_fn(step.name)}(run_id=run_id, prev_task_id={task_id_vars[parent]})"
             )
 
         task_id_vars[step.name] = var
@@ -719,16 +711,16 @@ def _render_event_trigger_launch_plan(spec: FlowSpec, trigger: TriggerSpec) -> s
     """
     wf = _wf_fn(spec.name)
     safe_event = re.sub(r"[^a-zA-Z0-9_]", "_", trigger.event_name)
-    plan_name = repr("%s_on_event_%s" % (wf, safe_event))
+    plan_name = repr(f"{wf}_on_event_{safe_event}")
     fixed_inputs_parts = []
     for flow_param, event_field in trigger.parameter_map:
         # Emit as a comment — fixed_inputs requires concrete values at
         # registration time, which we don't have for dynamic event fields.
-        fixed_inputs_parts.append("# parameter %s <- event field %r" % (flow_param, event_field))
+        fixed_inputs_parts.append(f"# parameter {flow_param} <- event field {event_field!r}")
     fixed_inputs_comment = "\n" + "\n".join(fixed_inputs_parts) if fixed_inputs_parts else ""
-    return '''\
+    return f'''\
 # ---------------------------------------------------------------------------
-# @trigger(event={event_name!r}) → Flyte LaunchPlan stub
+# @trigger(event={trigger.event_name!r}) → Flyte LaunchPlan stub
 #
 # Flyte does not have a native named-event trigger.  This inactive LaunchPlan
 # is registered with a name that encodes the event so it can be discovered in
@@ -741,13 +733,7 @@ def _render_event_trigger_launch_plan(spec: FlowSpec, trigger: TriggerSpec) -> s
 _event_trigger_{safe_event} = LaunchPlan.get_or_create(
     workflow={wf},
     name={plan_name},
-)'''.format(
-        event_name=trigger.event_name,
-        wf=wf,
-        plan_name=plan_name,
-        safe_event=safe_event,
-        fixed_inputs_comment=fixed_inputs_comment,
-    )
+)'''
 
 
 def _render_trigger_on_finish_launch_plan(spec: FlowSpec, tof: TriggerOnFinishSpec) -> str:
@@ -761,10 +747,10 @@ def _render_trigger_on_finish_launch_plan(spec: FlowSpec, tof: TriggerOnFinishSp
     """
     wf = _wf_fn(spec.name)
     safe_upstream = re.sub(r"[^a-zA-Z0-9_]", "_", tof.flow_name).lower()
-    plan_name = repr("%s_after_%s" % (wf, safe_upstream))
-    return '''\
+    plan_name = repr(f"{wf}_after_{safe_upstream}")
+    return f'''\
 # ---------------------------------------------------------------------------
-# @trigger_on_finish(flow={upstream!r}) → Flyte LaunchPlan stub
+# @trigger_on_finish(flow={tof.flow_name!r}) → Flyte LaunchPlan stub
 #
 # Register this LaunchPlan and configure it as a success notification target
 # on the upstream workflow's LaunchPlan in Flyte Admin.  The upstream
@@ -778,12 +764,7 @@ def _render_trigger_on_finish_launch_plan(spec: FlowSpec, tof: TriggerOnFinishSp
 _trigger_on_finish_{safe_upstream} = LaunchPlan.get_or_create(
     workflow={wf},
     name={plan_name},
-)'''.format(
-        upstream=tof.flow_name,
-        wf=wf,
-        plan_name=plan_name,
-        safe_upstream=safe_upstream,
-    )
+)'''
 
 
 # ---------------------------------------------------------------------------
@@ -792,7 +773,7 @@ _trigger_on_finish_{safe_upstream} = LaunchPlan.get_or_create(
 
 
 def _task_fn(step_name: str) -> str:
-    return "_step_%s" % step_name
+    return f"_step_{step_name}"
 
 
 def _wf_fn(flow_name: str) -> str:
@@ -807,7 +788,7 @@ def _workflow_signature(params: Sequence[ParameterSpec]) -> str:
     Metaflow run by passing the original run_id (e.g. via Flyte ``--recover``).
     """
     parts: list[str] = [
-        "%s: %s = %r" % (p.name, p.type_name, p.default if p.default is not None else "")
+        "{}: {} = {!r}".format(p.name, p.type_name, p.default if p.default is not None else "")
         for p in params
     ]
     parts.append("origin_run_id: str = ''")

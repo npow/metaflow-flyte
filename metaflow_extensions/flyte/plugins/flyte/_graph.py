@@ -76,12 +76,12 @@ def _validate(graph: Any, flow: Any) -> None:
         for deco in node.decorators:
             if deco.name == "batch":
                 raise NotSupportedException(
-                    "Step *%s* uses @batch which is not supported with Flyte. "
-                    "Remove @batch or use --with=batch on the Flyte CLI instead." % node.name
+                    f"Step *{node.name}* uses @batch which is not supported with Flyte. "
+                    "Remove @batch or use --with=batch on the Flyte CLI instead."
                 )
             if deco.name == "slurm":
                 raise NotSupportedException(
-                    "Step *%s* uses @slurm which is not supported with Flyte." % node.name
+                    f"Step *{node.name}* uses @slurm which is not supported with Flyte."
                 )
             # @resources is translated to native Flyte Resources — no warning needed.
 
@@ -319,8 +319,8 @@ def _extract_triggers(flow: Any) -> list[TriggerSpec]:
         name = t.get("name")
         if not name or not isinstance(name, str):
             warnings.warn(
-                "@trigger entry has a non-string or deploy-time event name %r — "
-                "skipping this trigger. Evaluate the event name before deploying." % (name,),
+                f"@trigger entry has a non-string or deploy-time event name {name!r} — "
+                "skipping this trigger. Evaluate the event name before deploying.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -348,8 +348,8 @@ def _extract_trigger_on_finishes(flow: Any) -> list[TriggerOnFinishSpec]:
         flow_name = t.get("flow") or t.get("fq_name")
         if not flow_name or not isinstance(flow_name, str):
             warnings.warn(
-                "@trigger_on_finish entry has a non-string or missing flow name %r — "
-                "skipping this trigger." % (flow_name,),
+                f"@trigger_on_finish entry has a non-string or missing flow name {flow_name!r} — "
+                "skipping this trigger.",
                 UserWarning,
                 stacklevel=2,
             )

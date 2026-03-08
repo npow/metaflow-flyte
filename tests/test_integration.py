@@ -47,7 +47,7 @@ def _compile(flow_path: Path, out_path: Path, extra_args: list[str] = (), datast
         text=True,
     )
     assert result.returncode == 0, (
-        "flyte create failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
+        f"flyte create failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     )
 
 
@@ -60,11 +60,11 @@ def _run_locally(out_path: Path, wf_name: str, params: dict | None = None) -> st
     cmd = ["pyflyte", "run", str(out_path), wf_name]
     if params:
         for k, v in params.items():
-            cmd += ["--%s" % k, str(v)]
+            cmd += [f"--{k}", str(v)]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     assert result.returncode == 0, (
-        "pyflyte run failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
+        f"pyflyte run failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     )
 
     # Give Metaflow's local datastore a moment to flush, then find the latest run.
@@ -76,7 +76,7 @@ def _latest_run(flow_name: str) -> metaflow.Run:
     """Return the most recently created Metaflow run for *flow_name*."""
     flow = metaflow.Flow(flow_name)
     runs = sorted(flow.runs(), key=lambda r: r.created_at, reverse=True)
-    assert runs, "No runs found for flow %s" % flow_name
+    assert runs, f"No runs found for flow {flow_name}"
     return runs[0]
 
 
@@ -107,7 +107,7 @@ class TestCompilation:
         out = tmp_path / "workflow.py"
         _compile(FLOWS_DIR / "linear_flow.py", out)
         result = subprocess.run(
-            [sys.executable, "-c", "import py_compile; py_compile.compile('%s')" % out],
+            [sys.executable, "-c", f"import py_compile; py_compile.compile('{out}')"],
             capture_output=True,
             text=True,
         )
@@ -274,7 +274,7 @@ class TestCompilation:
             text=True,
         )
         assert result.returncode == 0, (
-            "flyte create failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
+            f"flyte create failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
         )
         combined = result.stdout + result.stderr
         assert "resources" in combined.lower()
@@ -301,7 +301,7 @@ class TestCompilation:
         out = tmp_path / "workflow.py"
         _compile(FLOWS_DIR / "condition_flow.py", out)
         result = subprocess.run(
-            [sys.executable, "-c", "import py_compile; py_compile.compile('%s')" % out],
+            [sys.executable, "-c", f"import py_compile; py_compile.compile('{out}')"],
             capture_output=True,
             text=True,
         )
@@ -517,7 +517,7 @@ class TestE2ECluster:
             timeout=300,
         )
         assert result.returncode == 0, (
-            "Remote run failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
+            f"Remote run failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
         )
 
     def test_conditional_flow_remote(self, tmp_path):
@@ -539,5 +539,5 @@ class TestE2ECluster:
             timeout=300,
         )
         assert result.returncode == 0, (
-            "Remote conditional run failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
+            f"Remote conditional run failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
         )

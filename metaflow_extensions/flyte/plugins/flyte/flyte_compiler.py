@@ -51,8 +51,8 @@ class FlyteCompiler:
         all_tags = list(tags)
         if project_info:
             all_tags += [
-                "project:%s" % project_info["name"],
-                "project_branch:%s" % project_info["branch"],
+                "project:{}".format(project_info["name"]),
+                "project_branch:{}".format(project_info["branch"]),
             ]
 
         self._cfg = FlyteFlowConfig(

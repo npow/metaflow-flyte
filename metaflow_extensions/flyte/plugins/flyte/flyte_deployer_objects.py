@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING, ClassVar, Optional
+from typing import TYPE_CHECKING, ClassVar
 
 from metaflow.runner.deployer import DeployedFlow, TriggeredRun
 from metaflow.runner.utils import get_lower_level_group, handle_timeout, temporary_fifo
@@ -23,6 +23,7 @@ class FlyteTriggeredRun(TriggeredRun):
     def run(self):
         """Retrieve the Run object, applying deployer env vars so local metadata works."""
         import os
+
         import metaflow
         from metaflow.exception import MetaflowNotFound
 
@@ -55,20 +56,20 @@ class FlyteTriggeredRun(TriggeredRun):
                 os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = old_sysroot
 
     @property
-    def flyte_ui(self) -> Optional[str]:
+    def flyte_ui(self) -> str | None:
         """URL to the Flyte UI for this workflow execution, if available."""
         # The pathspec is "FlowName/flyte-<execution_id>"; extract the execution id.
         try:
             _, run_id = self.pathspec.split("/")
             if run_id.startswith("flyte-"):
                 execution_id = run_id[len("flyte-"):]
-                return "http://localhost:30080/console/projects/flytesnacks/domains/development/executions/%s" % execution_id
+                return f"http://localhost:30080/console/projects/flytesnacks/domains/development/executions/{execution_id}"
         except Exception:
             pass
         return None
 
     @property
-    def status(self) -> Optional[str]:
+    def status(self) -> str | None:
         """Return a simple status string based on the underlying Metaflow run."""
         run = self.run
         if run is None:
@@ -83,7 +84,7 @@ class FlyteTriggeredRun(TriggeredRun):
 class FlyteDeployedFlow(DeployedFlow):
     """A Metaflow flow deployed as a registered Flyte workflow."""
 
-    TYPE: ClassVar[Optional[str]] = "flyte"
+    TYPE: ClassVar[str | None] = "flyte"
 
     @property
     def id(self) -> str:
@@ -98,9 +99,10 @@ class FlyteDeployedFlow(DeployedFlow):
         })
 
     @classmethod
-    def from_deployment(cls, identifier: str, metadata: Optional[str] = None) -> "FlyteDeployedFlow":
+    def from_deployment(cls, identifier: str, metadata: str | None = None) -> FlyteDeployedFlow:
         """Recover a FlyteDeployedFlow from a deployment identifier."""
         import json
+
         from .flyte_deployer import FlyteDeployer
 
         info = json.loads(identifier)
@@ -132,10 +134,10 @@ class FlyteDeployedFlow(DeployedFlow):
         FlyteTriggeredRun
         """
         # Convert kwargs to "key=value" strings for --run-param.
-        run_params = tuple("%s=%s" % (k, v) for k, v in kwargs.items())
+        run_params = tuple(f"{k}={v}" for k, v in kwargs.items())
 
         with temporary_fifo() as (attribute_file_path, attribute_file_fd):
-            trigger_kwargs = dict(name=self.name, deployer_attribute_file=attribute_file_path)
+            trigger_kwargs = {"name": self.name, "deployer_attribute_file": attribute_file_path}
             if run_params:
                 trigger_kwargs["run_params"] = run_params
             command = get_lower_level_group(
@@ -161,8 +163,7 @@ class FlyteDeployedFlow(DeployedFlow):
                 return FlyteTriggeredRun(deployer=self.deployer, content=content)
 
         raise RuntimeError(
-            "Error triggering Flyte execution for flow %r"
-            % self.deployer.flow_file
+            f"Error triggering Flyte execution for flow {self.deployer.flow_file!r}"
         )
 
     trigger = run

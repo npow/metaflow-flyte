@@ -6,7 +6,7 @@ is available and the UX test suite can parametrise ``--scheduler-type=flyte``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Dict, Optional, Type
+from typing import TYPE_CHECKING, ClassVar
 
 from metaflow.runner.deployer_impl import DeployerImpl
 
@@ -29,23 +29,23 @@ class FlyteDeployer(DeployerImpl):
         Docker image URI for the Flyte task containers.
     """
 
-    TYPE: ClassVar[Optional[str]] = "flyte"
+    TYPE: ClassVar[str | None] = "flyte"
 
-    def __init__(self, deployer_kwargs: Dict[str, str], **kwargs) -> None:
+    def __init__(self, deployer_kwargs: dict[str, str], **kwargs) -> None:
         self._deployer_kwargs = deployer_kwargs
         super().__init__(**kwargs)
 
     @property
-    def deployer_kwargs(self) -> Dict[str, str]:
+    def deployer_kwargs(self) -> dict[str, str]:
         return self._deployer_kwargs
 
     @staticmethod
-    def deployed_flow_type() -> Type["FlyteDeployedFlow"]:
+    def deployed_flow_type() -> type[FlyteDeployedFlow]:
         from .flyte_deployer_objects import FlyteDeployedFlow
 
         return FlyteDeployedFlow
 
-    def create(self, **kwargs) -> "FlyteDeployedFlow":
+    def create(self, **kwargs) -> FlyteDeployedFlow:
         """Register this flow as a Flyte workflow and return a deployed-flow handle.
 
         Parameters

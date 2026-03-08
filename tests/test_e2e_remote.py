@@ -65,7 +65,7 @@ def _compile(flow_path: Path, out_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 0, (
-        "flyte create failed:\nSTDOUT: %s\nSTDERR: %s" % (result.stdout, result.stderr)
+        f"flyte create failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     )
 
 
@@ -79,12 +79,11 @@ def _run_remote(out_path: Path, wf_name: str, params: dict | None = None) -> Non
     ]
     if params:
         for k, v in params.items():
-            cmd += ["--%s" % k, str(v)]
+            cmd += [f"--{k}", str(v)]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     assert result.returncode == 0, (
-        "Remote execution failed for %s:\nSTDOUT: %s\nSTDERR: %s"
-        % (wf_name, result.stdout, result.stderr)
+        f"Remote execution failed for {wf_name}:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     )
 
 

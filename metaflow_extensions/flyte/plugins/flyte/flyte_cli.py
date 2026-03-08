@@ -24,7 +24,6 @@ from metaflow_extensions.flyte.plugins.flyte._codegen import _wf_fn
 from metaflow_extensions.flyte.plugins.flyte.exception import FlyteException
 from metaflow_extensions.flyte.plugins.flyte.flyte_compiler import FlyteCompiler
 
-
 # ---------------------------------------------------------------------------
 # CLI group
 # ---------------------------------------------------------------------------
@@ -109,7 +108,7 @@ def create(
 ) -> None:
     flow_name = obj.flow.name  # type: ignore[attr-defined]
     if output_file is None:
-        output_file = "%s_flyte.py" % flow_name.lower()
+        output_file = f"{flow_name.lower()}_flyte.py"
     if os.path.abspath(sys.argv[0]) == os.path.abspath(output_file):
         raise MetaflowException(
             "Output file name cannot be the same as the flow file name."
@@ -143,13 +142,9 @@ def create(
             )
 
     obj.echo(  # type: ignore[attr-defined]
-        "Flyte workflow file written to *{out}*.\n"
-        "Run locally: pyflyte run {out} {wf}\n"
-        "Register:    python {flow} flyte register {out}".format(
-            out=output_file,
-            wf=_wf_fn(flow_name),
-            flow=sys.argv[0],
-        ),
+        f"Flyte workflow file written to *{output_file}*.\n"
+        f"Run locally: pyflyte run {output_file} {_wf_fn(flow_name)}\n"
+        f"Register:    python {sys.argv[0]} flyte register {output_file}",
         bold=True,
     )
 
@@ -213,10 +208,10 @@ def run(
         else:
             cmd = ["pyflyte", "run", tmp_path, wf_name]
 
-        obj.echo("Running: %s" % " ".join(cmd), bold=True)  # type: ignore[attr-defined]
+        obj.echo("Running: {}".format(" ".join(cmd)), bold=True)  # type: ignore[attr-defined]
         result = subprocess.run(cmd)
         if result.returncode != 0:
-            raise FlyteException("pyflyte run failed with exit code %d" % result.returncode)
+            raise FlyteException(f"pyflyte run failed with exit code {result.returncode:d}")
     finally:
         try:
             os.unlink(tmp_path)
@@ -282,10 +277,10 @@ def register(
     )
 
     register_cmd = _pyflyte_register_cmd(flyte_project, flyte_domain, insecure, output_file)
-    obj.echo("Registering: %s" % " ".join(register_cmd), bold=True)  # type: ignore[attr-defined]
+    obj.echo("Registering: {}".format(" ".join(register_cmd)), bold=True)  # type: ignore[attr-defined]
     result = subprocess.run(register_cmd)
     if result.returncode != 0:
-        raise FlyteException("pyflyte register failed with exit code %d" % result.returncode)
+        raise FlyteException(f"pyflyte register failed with exit code {result.returncode:d}")
 
     flow_name = obj.flow.name  # type: ignore[attr-defined]
     wf_name = _wf_fn(flow_name)
@@ -303,10 +298,7 @@ def register(
 
     obj.echo(  # type: ignore[attr-defined]
         "Workflow registered. Run it with:\n"
-        "  pyflyte run --remote --project {p} --domain {d} {f} {wf}".format(
-            p=flyte_project, d=flyte_domain, f=output_file,
-            wf=wf_name,
-        ),
+        f"  pyflyte run --remote --project {flyte_project} --domain {flyte_domain} {output_file} {wf_name}",
         bold=True,
     )
 
@@ -368,10 +360,10 @@ def deploy(
 
     if image:
         register_cmd = _pyflyte_register_cmd(flyte_project, flyte_domain, insecure, output_file)
-        obj.echo("Registering: %s" % " ".join(register_cmd), bold=True)  # type: ignore[attr-defined]
+        obj.echo("Registering: {}".format(" ".join(register_cmd)), bold=True)  # type: ignore[attr-defined]
         result = subprocess.run(register_cmd)
         if result.returncode != 0:
-            raise FlyteException("pyflyte register failed with exit code %d" % result.returncode)
+            raise FlyteException(f"pyflyte register failed with exit code {result.returncode:d}")
 
     flow_name = obj.flow.name  # type: ignore[attr-defined]
     wf_name = _wf_fn(flow_name)
@@ -388,11 +380,8 @@ def deploy(
             )
 
     obj.echo(  # type: ignore[attr-defined]
-        "Flyte workflow file written to *{out}* and registered.\n"
-        "Trigger a run: python {flow} flyte trigger".format(
-            out=output_file,
-            flow=sys.argv[0],
-        ),
+        f"Flyte workflow file written to *{output_file}* and registered.\n"
+        f"Trigger a run: python {sys.argv[0]} flyte trigger",
         bold=True,
     )
 
@@ -450,7 +439,7 @@ def trigger(
 
     flow_name = name or obj.flow.name  # type: ignore[attr-defined]
     run_id = "flyte-local-" + uuid.uuid4().hex[:12]
-    pathspec = "%s/%s" % (flow_name, run_id)
+    pathspec = f"{flow_name}/{run_id}"
 
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tmp:
         tmp_path = tmp.name
@@ -485,18 +474,18 @@ def trigger(
             _pyflyte = "pyflyte"
         cmd = [_pyflyte, "run", tmp_path, wf_name]
         for k, v in params.items():
-            cmd += ["--%s" % k, v]
+            cmd += [f"--{k}", v]
 
         env = {**os.environ, "METAFLOW_FLYTE_LOCAL_RUN_ID": run_id}
-        obj.echo("Triggering (local): %s" % " ".join(cmd), bold=True)  # type: ignore[attr-defined]
+        obj.echo("Triggering (local): {}".format(" ".join(cmd)), bold=True)  # type: ignore[attr-defined]
         result = subprocess.run(cmd, env=env, capture_output=True, text=True)
         if result.returncode != 0:
             raise FlyteException(
-                "pyflyte run failed with exit code %d:\n%s" % (result.returncode, result.stderr)
+                f"pyflyte run failed with exit code {result.returncode:d}:\n{result.stderr}"
             )
 
         obj.echo(  # type: ignore[attr-defined]
-            "Triggered Flyte execution (pathspec: *{pathspec}*).".format(pathspec=pathspec),
+            f"Triggered Flyte execution (pathspec: *{pathspec}*).",
             bold=True,
         )
     finally:
@@ -566,7 +555,7 @@ def resume(
 
     flow_name = obj.flow.name  # type: ignore[attr-defined]
     run_id = "flyte-resume-" + uuid.uuid4().hex[:12]
-    pathspec = "%s/%s" % (flow_name, run_id)
+    pathspec = f"{flow_name}/{run_id}"
 
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tmp:
         tmp_path = tmp.name
@@ -598,18 +587,18 @@ def resume(
         # allowing Metaflow to skip steps whose artifacts already exist.
         cmd = [_pyflyte, "run", tmp_path, wf_name, "--origin_run_id", clone_run_id]
         for k, v in params.items():
-            cmd += ["--%s" % k, v]
+            cmd += [f"--{k}", v]
 
         env = {**os.environ, "METAFLOW_FLYTE_LOCAL_RUN_ID": run_id}
-        obj.echo("Resuming from run %s: %s" % (clone_run_id, " ".join(cmd)), bold=True)  # type: ignore[attr-defined]
+        obj.echo("Resuming from run {}: {}".format(clone_run_id, " ".join(cmd)), bold=True)  # type: ignore[attr-defined]
         result = subprocess.run(cmd, env=env, capture_output=True, text=True)
         if result.returncode != 0:
             raise FlyteException(
-                "pyflyte run failed with exit code %d:\n%s" % (result.returncode, result.stderr)
+                f"pyflyte run failed with exit code {result.returncode:d}:\n{result.stderr}"
             )
 
         obj.echo(  # type: ignore[attr-defined]
-            "Resumed Flyte execution (pathspec: *{pathspec}*).".format(pathspec=pathspec),
+            f"Resumed Flyte execution (pathspec: *{pathspec}*).",
             bold=True,
         )
     finally:
@@ -682,7 +671,7 @@ def _resolve_name(obj: object) -> str:
         if project_decos:
             project_name = project_decos[0].attributes.get("name", "")
             if project_name:
-                name = "%s.%s" % (project_name, name)
+                name = f"{project_name}.{name}"
     except Exception:
         pass
 
