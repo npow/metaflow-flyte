@@ -203,9 +203,11 @@ jobs:
           IMAGE_REF="localhost:30000/metaflow-flyte-ux:${GITHUB_SHA::8}"
           docker build -t "$IMAGE_REF" -f Dockerfile.ux .
           docker push "$IMAGE_REF"
-          # Import into k3s containerd so pods don't need to pull from the registry
+          # Import into k3s containerd (k8s.io namespace) so pod scheduling
+          # finds the image without pulling from the registry.
+          # k3s uses the k8s.io namespace for all CRI-managed images.
           docker save "$IMAGE_REF" | docker exec -i flyte-sandbox \
-            /bin/ctr -a /run/k3s/containerd/containerd.sock images import -
+            /bin/ctr -a /run/k3s/containerd/containerd.sock -n k8s.io images import -
           echo "UX_IMAGE=${IMAGE_REF}" >> "$GITHUB_ENV"
 
       - name: Pin host-side Metaflow sysroot
