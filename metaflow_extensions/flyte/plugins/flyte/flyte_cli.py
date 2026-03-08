@@ -557,12 +557,13 @@ def trigger(
                     _pyflyte, "run", "--remote",
                     "--project", flyte_project,
                     "--domain", flyte_domain,
-                    # Do NOT use --copy: the task containers already have the
-                    # flow code baked in via the Docker image.  --copy all would
-                    # try to upload a local code bundle to the S3 backend and then
-                    # download it inside the task container, which is unnecessary
-                    # and can fail if the S3 endpoint URL differs between the host
-                    # and the cluster.
+                    # --copy auto: fast-serialize only the generated workflow file
+                    # (not the entire source root, which is what --copy all does).
+                    # The generated file is a small temp file; --copy all would
+                    # scan and upload the entire /tmp directory tree, causing a
+                    # very long upload.  --copy auto copies only the entry module
+                    # and user-defined imports (not stdlib/flytekit/metaflow).
+                    "--copy", "auto",
                     "--wait",  # block until execution completes
                 ]
                 if image:
