@@ -125,18 +125,29 @@ def create(
         _env_keys = ("METAFLOW_DEFAULT_METADATA", "METAFLOW_DEFAULT_DATASTORE",
                      "METAFLOW_DEFAULT_ENVIRONMENT", "METAFLOW_DATASTORE_SYSROOT_LOCAL")
         _saved_env = {k: os.environ[k] for k in _env_keys if k in os.environ}
+        _additional_info = {
+            "workflow_file": os.path.abspath(output_file),
+            "flyte_project": flyte_project,
+            "flyte_domain": flyte_domain,
+            "saved_env": _saved_env,
+        }
+        # The "name" field becomes deployer.name which is used as the identifier
+        # passed to FlyteDeployedFlow.from_deployment().  Encode everything needed
+        # to recover the deployment so that from_deployment() can rebuild the
+        # deployer without access to the original Deployer() instance.
+        _recovery_id = json.dumps({
+            "name": flow_name,
+            "flow_name": flow_name,
+            "flow_file": os.path.abspath(sys.argv[0]),
+            **_additional_info,
+        })
         with open(deployer_attribute_file, "w") as f:
             json.dump(
                 {
-                    "name": flow_name,
+                    "name": _recovery_id,
                     "flow_name": flow_name,
                     "metadata": "{}",
-                    "additional_info": {
-                        "workflow_file": os.path.abspath(output_file),
-                        "flyte_project": flyte_project,
-                        "flyte_domain": flyte_domain,
-                        "saved_env": _saved_env,
-                    },
+                    "additional_info": _additional_info,
                 },
                 f,
             )

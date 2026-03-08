@@ -100,15 +100,29 @@ class FlyteDeployedFlow(DeployedFlow):
 
     @classmethod
     def from_deployment(cls, identifier: str, metadata: str | None = None) -> FlyteDeployedFlow:
-        """Recover a FlyteDeployedFlow from a deployment identifier."""
+        """Recover a FlyteDeployedFlow from a deployment identifier.
+
+        The identifier is expected to be the JSON string written as ``deployer.name``
+        by the ``flyte create --deployer-attribute-file`` command.  It encodes the
+        flow file path and other deployment metadata so that the deployer can be
+        fully reconstructed.
+
+        A plain flow-name string is also accepted for backwards compatibility,
+        though ``trigger()`` will fail without a valid ``flow_file``.
+        """
         import json
 
         from .flyte_deployer import FlyteDeployer
 
-        info = json.loads(identifier)
-        deployer = FlyteDeployer(flow_file=info["flow_file"], deployer_kwargs={})
-        deployer.name = info["name"]
-        deployer.flow_name = info["flow_name"]
+        # Try to parse as JSON; fall back to treating as a plain flow name.
+        try:
+            info = json.loads(identifier)
+        except (json.JSONDecodeError, ValueError):
+            info = {"name": identifier, "flow_name": identifier, "flow_file": None}
+
+        deployer = FlyteDeployer(flow_file=info.get("flow_file"), deployer_kwargs={})
+        deployer.name = identifier  # preserve the original identifier for chained calls
+        deployer.flow_name = info.get("flow_name", info.get("name"))
         deployer.metadata = metadata or "{}"
         deployer.additional_info = {
             k: v for k, v in info.items()
