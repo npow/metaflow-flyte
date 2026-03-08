@@ -115,6 +115,12 @@ def _step_cmd(
         "--metadata", METADATA_TYPE,
         "--no-pylint",
         "--with=flyte_internal",
+    ]
+    # Propagate the @project branch so the step subprocess resolves the same
+    # project branch name that was used at compile time (create / trigger).
+    if PROJECT_BRANCH:
+        cmd += ["--branch", PROJECT_BRANCH]
+    cmd += [
         "step", step_name,
         "--run-id", run_id,
         "--task-id", task_id,
@@ -309,6 +315,9 @@ FLYTE_PROJECT: str = {cfg.flyte_project!r}
 FLYTE_DOMAIN: str = {cfg.flyte_domain!r}
 IMAGE: str | None = {cfg.image!r}
 WITH_DECORATORS: List[str] = {list(cfg.with_decorators)!r}
+# Raw @project branch passed via --branch (without "test."/"user." prefix).
+# Empty string means no explicit branch — @project defaults to user.<username>.
+PROJECT_BRANCH: str = {(cfg.project_info or {}).get("branch_raw", "")!r}
 
 # Task decorator factory — applies IMAGE and enables Deck when set.
 _TASK_KWARGS = {{'container_image': IMAGE, 'enable_deck': True}} if IMAGE else {{'enable_deck': True}}

@@ -100,6 +100,11 @@ class FlyteCompiler:
                 "name": project_name,
                 "flow_name": project_flow_name,
                 "branch": branch_name,
+                # raw branch as passed by the user via --branch (without the
+                # "test."/"user." prefix added by format_name).  Stored so that
+                # _step_cmd can pass --branch <raw> to Metaflow subprocesses and
+                # have @project resolve the same branch name.
+                "branch_raw": self._branch or "",
             }
         except Exception:
             return None
