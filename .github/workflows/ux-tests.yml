@@ -192,11 +192,21 @@ jobs:
       - name: Build and push UX task image
         # Flatten all UX flows into ux_flows/ for the Docker build context.
         # The sandbox Docker registry is on host port 30000.
+        # Tag with $GITHUB_SHA so Kubernetes uses IfNotPresent pull policy
+        # instead of Always (which is the default for "latest" tags).
+        # After pushing to the host-accessible registry, also import the image
+        # directly into k3s containerd so task pods find it without pulling
+        # (k3s pods cannot reach localhost:30000 from inside the cluster).
         run: |
           mkdir -p ux_flows
           find _metaflow_src/test/ux/core/flows -name "*.py" -exec cp {} ux_flows/ \;
-          docker build -t localhost:30000/metaflow-flyte-ux:latest -f Dockerfile.ux .
-          docker push localhost:30000/metaflow-flyte-ux:latest
+          IMAGE_REF="localhost:30000/metaflow-flyte-ux:${GITHUB_SHA::8}"
+          docker build -t "$IMAGE_REF" -f Dockerfile.ux .
+          docker push "$IMAGE_REF"
+          # Import into k3s containerd so pods don't need to pull from the registry
+          docker save "$IMAGE_REF" | docker exec -i flyte-sandbox \
+            /bin/ctr -a /run/k3s/containerd/containerd.sock images import -
+          echo "UX_IMAGE=${IMAGE_REF}" >> "$GITHUB_ENV"
 
       - name: Pin host-side Metaflow sysroot
         run: echo "METAFLOW_DATASTORE_SYSROOT_LOCAL=$MF_HOST_SYSROOT" >> "$GITHUB_ENV"
@@ -231,7 +241,7 @@ jobs:
                 decospec: null
                 deploy_args:
                   flyte_endpoint: "localhost:30080"
-                  image: "localhost:30000/metaflow-flyte-ux:latest"
+                  image: "${{ env.UX_IMAGE }}"
                   container_flows_dir: "/app/flows"
                   container_sysroot: "/var/lib/flyte/metaflow_meta"
                 enabled: true
