@@ -215,6 +215,20 @@ jobs:
       - name: Pin host-side Metaflow sysroot
         run: echo "METAFLOW_DATASTORE_SYSROOT_LOCAL=$MF_HOST_SYSROOT" >> "$GITHUB_ENV"
 
+      - name: Verify shared metadata volume (pre-test)
+        # Print the contents of the shared metadata volume so we can see if it is
+        # being populated by task pods.  Runs before the test for baseline info.
+        if: always()
+        run: |
+          echo "=== Docker volume sysroot ==="
+          ls -la "$MF_HOST_SYSROOT/" 2>/dev/null || echo "(empty or missing)"
+          echo "=== k3s hostPath ==="
+          docker exec flyte-sandbox ls -la /var/lib/flyte/storage/metaflow_meta/ 2>/dev/null || echo "(empty or missing)"
+          echo "=== k3s pods in flytesnacks-development ==="
+          docker exec flyte-sandbox kubectl get pods -n flytesnacks-development 2>/dev/null || echo "(none)"
+          echo "=== PodTemplate default ==="
+          docker exec flyte-sandbox kubectl get podtemplate default -n flytesnacks-development -o yaml 2>/dev/null | head -40 || echo "(not found)"
+
       - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
         env:
           # FLYTECTL_CONFIG tells pyflyte where to find the Flyte endpoint + MinIO.
@@ -249,3 +263,19 @@ jobs:
                   container_flows_dir: "/app/flows"
                   container_sysroot: "/var/lib/flyte/metaflow_meta"
                 enabled: true
+
+      - name: Dump diagnostic info (post-test)
+        if: always()
+        run: |
+          echo "=== Docker volume sysroot (after test) ==="
+          find "$MF_HOST_SYSROOT" 2>/dev/null | head -40 || echo "(empty or missing)"
+          echo "=== k3s hostPath (after test) ==="
+          docker exec flyte-sandbox find /var/lib/flyte/storage/metaflow_meta 2>/dev/null | head -40 || echo "(empty or missing)"
+          echo "=== k3s pods (after test) ==="
+          docker exec flyte-sandbox kubectl get pods -n flytesnacks-development 2>/dev/null || echo "(none)"
+          echo "=== last Flyte executions ==="
+          flytectl get execution -n flytesnacks-development 2>/dev/null | head -10 || echo "(none)"
+          echo "=== MinIO bucket contents ==="
+          docker exec flyte-sandbox kubectl exec -n flyte \
+            $(docker exec flyte-sandbox kubectl get pod -n flyte -l app=minio -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) \
+            -- mc ls local/my-s3-bucket/metaflow/ 2>/dev/null | head -20 || echo "(minio not accessible or empty)"
