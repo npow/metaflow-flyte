@@ -153,6 +153,10 @@ class _RemoteFlowRun:
         return self._pathspec
 
     @property
+    def id(self) -> str:
+        return self._run_id
+
+    @property
     def successful(self) -> bool:
         return True  # Flyte execution confirmed SUCCEEDED
 
