@@ -169,6 +169,10 @@ jobs:
           DOCKER_VOL=$(docker volume inspect flyte-sandbox --format '{{ .Mountpoint }}')
           echo "MF_HOST_SYSROOT=${DOCKER_VOL}/metaflow_meta" >> "$GITHUB_ENV"
           echo "Host sysroot: ${DOCKER_VOL}/metaflow_meta"
+          # /var/lib/docker/volumes/ is root-owned; make metaflow_meta world-writable
+          # so the GHA runner user (non-root) can read metadata written by k3s task pods.
+          sudo chmod -R 777 "${DOCKER_VOL}/metaflow_meta" 2>/dev/null || true
+          sudo chmod 755 "${DOCKER_VOL}" 2>/dev/null || true
 
       - name: Build, push and import UX task image into k3s
         # Flatten all UX flows into ux_flows/ for the Docker build context.
@@ -234,10 +238,18 @@ jobs:
           # FLYTECTL_CONFIG tells pyflyte where to find the Flyte Admin endpoint
           # and the MinIO storage backend for fast-serialization code bundles.
           FLYTECTL_CONFIG: /home/runner/.flyte/config.yaml
-          # Local datastore on the host — reads from the Docker volume path that
-          # corresponds to /var/lib/flyte/metaflow_meta inside task containers.
-          # No S3 round-trips needed: artifacts are read directly from the filesystem.
-          METAFLOW_DEFAULT_DATASTORE: local
+          # S3 datastore — task containers write artifacts to MinIO; the host
+          # reads them back via the same MinIO NodePort (localhost:30002).
+          # Use AWS_ENDPOINT_URL_S3 (picked up automatically by boto3) instead
+          # of METAFLOW_S3_ENDPOINT_URL so the trigger command doesn't inject
+          # the host-side URL into containers (which use the baked-in in-cluster
+          # MinIO URL from Dockerfile.ux).
+          METAFLOW_DEFAULT_DATASTORE: s3
+          METAFLOW_DATASTORE_SYSROOT_S3: "s3://my-s3-bucket/metaflow/"
+          AWS_ENDPOINT_URL_S3: "http://localhost:30002"
+          AWS_ACCESS_KEY_ID: minio
+          AWS_SECRET_ACCESS_KEY: miniostorage
+          AWS_DEFAULT_REGION: us-east-1
         with:
           metaflow-ref: npow/corral-devstack
           extra-install: "."

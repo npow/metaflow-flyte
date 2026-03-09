@@ -557,14 +557,13 @@ def trigger(
                     _pyflyte, "run", "--remote",
                     "--project", flyte_project,
                     "--domain", flyte_domain,
-                    # --copy auto: fast-serialize only the generated workflow file
-                    # (not the entire source root, which is what --copy all does).
-                    # The generated file is a small temp file; --copy all would
-                    # scan and upload the entire /tmp directory tree, causing a
-                    # very long upload.  --copy auto copies only the entry module
-                    # and user-defined imports (not stdlib/flytekit/metaflow).
+                    # --copy auto: fast-serialize only the generated workflow file.
                     "--copy", "auto",
-                    "--wait",  # block until execution completes
+                    # Do NOT pass --wait: pyflyte --wait uses sync_execution with
+                    # sync_nodes=True, which makes O(n_nodes) gRPC calls per poll
+                    # and can be extremely slow on resource-constrained CI runners.
+                    # We implement our own lightweight polling below using the
+                    # flytekit Python API with sync_nodes=False (one gRPC call/poll).
                 ]
                 if image:
                     cmd += ["--image", image]
@@ -663,15 +662,77 @@ def trigger(
                     f"pyflyte run failed with exit code {result.returncode:d}:\n{result.stderr}"
                 )
 
-            # Parse the Flyte execution ID from pyflyte output and derive the
-            # Metaflow run_id (matches _mf_generate_run_id in generated code).
+            # Parse the Flyte execution ID from the console URL in pyflyte output.
+            # Without --wait, pyflyte prints:
+            #   [✔] Go to http://.../executions/<exec_id> to see execution in the console.
             import re as _re
             _stdout = result.stdout + result.stderr
-            _exec_match = _re.search(r"Execution (\S+) has succeeded", _stdout)
-            if _exec_match:
-                flyte_exec_id = _exec_match.group(1).rstrip(".")
-                run_id = "flyte-" + flyte_exec_id
-                pathspec = f"{flow_name}/{run_id}"
+            _exec_match = (
+                _re.search(r"/executions/([a-z0-9]+)\b", _stdout)
+                or _re.search(r"Execution (\S+) has succeeded", _stdout)
+            )
+            if not _exec_match:
+                raise FlyteException(
+                    "Could not parse Flyte execution ID from pyflyte output:\n"
+                    + _stdout[:500]
+                )
+            flyte_exec_id = _exec_match.group(1).rstrip(".")
+            run_id = "flyte-" + flyte_exec_id
+            pathspec = f"{flow_name}/{run_id}"
+
+            # Poll for execution completion using the flytekit Python API with
+            # sync_nodes=False.  This makes a single lightweight gRPC call per poll
+            # instead of sync_execution's O(n_nodes) calls, avoiding the 30-minute
+            # wait that pyflyte --wait causes on resource-constrained CI runners.
+            try:
+                import time as _time
+
+                from flytekit.configuration import Config as _Cfg
+                from flytekit.configuration import PlatformConfig as _PC
+                from flytekit.remote import FlyteRemote as _FR
+                _remote = _FR(
+                    _Cfg(platform=_PC(endpoint=flyte_endpoint, insecure=True))
+                )
+                _exec = _remote.fetch_execution(
+                    project=flyte_project, domain=flyte_domain, name=flyte_exec_id
+                )
+                _poll_interval = 10  # seconds
+                _max_wait = 1800  # seconds
+                _start = _time.time()
+                while True:
+                    _exec = _remote.sync_execution(_exec, sync_nodes=False)
+                    if _exec.is_done:
+                        break
+                    if _time.time() - _start > _max_wait:
+                        raise FlyteException(
+                            f"Flyte execution {flyte_exec_id} did not complete "
+                            f"within {_max_wait:d} seconds"
+                        )
+                    _elapsed = int(_time.time() - _start)
+                    obj.echo(  # type: ignore[attr-defined]
+                        f"Waiting for Flyte execution {flyte_exec_id} "
+                        f"(elapsed: {_elapsed:d}s)...",
+                    )
+                    _time.sleep(_poll_interval)
+                # Check for failure
+                from flytekit.models.core.execution import WorkflowExecutionPhase as _WEP
+                if _exec.closure.phase != _WEP.SUCCEEDED:
+                    _phase = _WEP.enum_to_string(_exec.closure.phase)
+                    _err_msg = ""
+                    if _exec.closure.error:
+                        _err_msg = _exec.closure.error.message
+                    raise FlyteException(
+                        f"Flyte execution {flyte_exec_id} failed "
+                        f"(phase: {_phase}): {_err_msg}"
+                    )
+            except FlyteException:
+                raise
+            except Exception as _poll_err:
+                # Fallback: if polling fails for any reason, raise with message.
+                raise FlyteException(
+                    f"Error polling Flyte execution {flyte_exec_id}: {_poll_err}"
+                ) from _poll_err
+
             # Update the deployer attribute file with the resolved pathspec.
             if deployer_attribute_file:
                 with open(deployer_attribute_file, "w") as f:
