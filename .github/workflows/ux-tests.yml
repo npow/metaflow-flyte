@@ -119,6 +119,18 @@ jobs:
           done
           flytectl get project | grep -q flytesnacks
 
+      - name: Enable PodTemplate injection in Flyte propeller config
+        # Patch the flyte-sandbox-config ConfigMap to add
+        # `plugins.k8s.default-pod-template-name: default` so that Flyte
+        # propeller merges the "default" PodTemplate into every task pod.
+        # After patching, restart the Flyte binary pod to pick up the change.
+        run: |
+          docker exec -i flyte-sandbox kubectl patch cm flyte-sandbox-config -n flyte \
+            --type=json \
+            -p='[{"op":"add","path":"/data/101-pod-template.yaml","value":"plugins:\n  k8s:\n    default-pod-template-name: default\n"}]'
+          docker exec flyte-sandbox kubectl rollout restart deployment/flyte-sandbox -n flyte
+          docker exec flyte-sandbox kubectl rollout status deployment/flyte-sandbox -n flyte --timeout=120s
+
       - name: Create shared Metaflow metadata dir, k3s PV and PVC
         # Create a hostPath-backed PV/PVC for Metaflow local metadata sharing.
         # The PodTemplate (which references the UX task image) is created AFTER

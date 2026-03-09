@@ -144,7 +144,8 @@ def create(
     if deployer_attribute_file:
         # Capture env vars needed for local execution so from_deployment can restore them.
         _env_keys = ("METAFLOW_DEFAULT_METADATA", "METAFLOW_DEFAULT_DATASTORE",
-                     "METAFLOW_DEFAULT_ENVIRONMENT", "METAFLOW_DATASTORE_SYSROOT_LOCAL")
+                     "METAFLOW_DEFAULT_ENVIRONMENT", "METAFLOW_DATASTORE_SYSROOT_LOCAL",
+                     "METAFLOW_DATASTORE_SYSROOT_S3")
         _saved_env = {k: os.environ[k] for k in _env_keys if k in os.environ}
         # Also capture METAFLOW_FLOW_CONFIG_VALUE so that the trigger subprocess
         # (which re-imports the flow but may lack the --config-value CLI flag)
