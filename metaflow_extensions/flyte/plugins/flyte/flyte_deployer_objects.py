@@ -33,16 +33,21 @@ class FlyteTriggeredRun(TriggeredRun):
 
         old_meta = os.environ.get("METAFLOW_DEFAULT_METADATA")
         old_sysroot = os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL")
+        old_ds_root = None
         try:
             os.environ["METAFLOW_DEFAULT_METADATA"] = meta_type
             if meta_type == "local" and sysroot is None:
                 sysroot = os.path.expanduser("~")
             if meta_type == "local" and sysroot:
-                # Use "local@<sysroot>" to force compute_info() to set
-                # LocalStorage.datastore_root to the provided path.  This is
-                # necessary because LocalStorage.SYSROOT_VAR is set at module
-                # import time and cannot be changed via os.environ after import.
-                metaflow.metadata(f"local@{sysroot}")
+                # Set LocalStorage.datastore_root directly (bypassing compute_info's
+                # os.path.isdir check) so we can look up runs even when the sysroot
+                # directory was just created by containers and the directory scanner
+                # hasn't picked it up yet.
+                from metaflow.plugins.datastores.local_storage import LocalStorage
+                old_ds_root = LocalStorage.datastore_root
+                mf_dir = os.path.join(sysroot, ".metaflow")
+                LocalStorage.datastore_root = mf_dir
+                metaflow.metadata("local")
                 os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = sysroot
             else:
                 metaflow.metadata(meta_type)
@@ -62,6 +67,9 @@ class FlyteTriggeredRun(TriggeredRun):
                 os.environ.pop("METAFLOW_DATASTORE_SYSROOT_LOCAL", None)
             else:
                 os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = old_sysroot
+            if old_ds_root is not None:
+                from metaflow.plugins.datastores.local_storage import LocalStorage
+                LocalStorage.datastore_root = old_ds_root
 
     @property
     def flyte_ui(self) -> str | None:
