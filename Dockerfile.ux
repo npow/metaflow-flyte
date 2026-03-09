@@ -21,17 +21,15 @@ RUN pip install --no-cache-dir -e /pkg/
 RUN mkdir -p /app/flows
 COPY ux_flows/ /app/flows/
 
-# Metaflow and MinIO configuration for in-cluster execution.
-# METAFLOW_S3_ENDPOINT_URL points to the sandbox MinIO service DNS — this is the
-# URL reachable from inside k3d task pods (NOT the NodePort used by the host).
-# METAFLOW_DEFAULT_DATASTORE may be overridden by --envvars at trigger time.
+# Metaflow configuration for in-cluster execution.
+# Use local datastore — much faster than S3 for UX tests and avoids
+# MinIO network round-trips that can be slow on shared GHA runners.
+# The datastore sysroot is the PVC-mounted shared volume; it is
+# overridden at trigger time via --envvars (container_sysroot parameter).
+# The host reads artifacts from the same path via the Docker volume mount.
 ENV USERNAME=metaflow \
-    AWS_ACCESS_KEY_ID=minio \
-    AWS_SECRET_ACCESS_KEY=miniostorage \
-    AWS_DEFAULT_REGION=us-east-1 \
     METAFLOW_DEFAULT_METADATA=local \
-    METAFLOW_DEFAULT_DATASTORE=s3 \
-    METAFLOW_DATASTORE_SYSROOT_S3=s3://my-s3-bucket/metaflow/ \
-    METAFLOW_S3_ENDPOINT_URL=http://flyte-sandbox-minio.flyte.svc.cluster.local:9000
+    METAFLOW_DEFAULT_DATASTORE=local \
+    METAFLOW_DATASTORE_SYSROOT_LOCAL=/var/lib/flyte/metaflow_meta
 
 WORKDIR /workspace

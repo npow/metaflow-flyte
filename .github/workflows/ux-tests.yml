@@ -231,17 +231,13 @@ jobs:
 
       - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
         env:
-          # FLYTECTL_CONFIG tells pyflyte where to find the Flyte endpoint + MinIO.
+          # FLYTECTL_CONFIG tells pyflyte where to find the Flyte Admin endpoint
+          # and the MinIO storage backend for fast-serialization code bundles.
           FLYTECTL_CONFIG: /home/runner/.flyte/config.yaml
-          # S3 datastore (sandbox MinIO via NodePort).
-          # AWS_ENDPOINT_URL_S3 is picked up by boto3 without being injected
-          # into task containers (which use the baked-in in-cluster DNS URL).
-          METAFLOW_DEFAULT_DATASTORE: s3
-          METAFLOW_DATASTORE_SYSROOT_S3: "s3://my-s3-bucket/metaflow/"
-          AWS_ENDPOINT_URL_S3: "http://localhost:30002"
-          AWS_ACCESS_KEY_ID: minio
-          AWS_SECRET_ACCESS_KEY: miniostorage
-          AWS_DEFAULT_REGION: us-east-1
+          # Local datastore on the host — reads from the Docker volume path that
+          # corresponds to /var/lib/flyte/metaflow_meta inside task containers.
+          # No S3 round-trips needed: artifacts are read directly from the filesystem.
+          METAFLOW_DEFAULT_DATASTORE: local
         with:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
