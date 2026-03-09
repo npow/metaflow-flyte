@@ -4,7 +4,7 @@
 [![E2E](https://github.com/npow/metaflow-flyte/actions/workflows/e2e.yml/badge.svg)](https://github.com/npow/metaflow-flyte/actions/workflows/e2e.yml)
 [![PyPI](https://img.shields.io/pypi/v/metaflow-flyte)](https://pypi.org/project/metaflow-flyte/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/) [![Docs](https://img.shields.io/badge/docs-mintlify-18a34a?style=flat-square)](https://mintlify.com/npow/metaflow-flyte)
 
 Schedule and monitor your Metaflow pipelines through Flyte without rewriting them.
 
