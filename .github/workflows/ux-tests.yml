@@ -308,6 +308,8 @@ jobs:
       contents: read
       checks: write
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all JUnit XML artifacts
         uses: actions/download-artifact@v4
         with:
