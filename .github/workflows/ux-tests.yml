@@ -299,3 +299,25 @@ jobs:
           docker exec flyte-sandbox kubectl exec -n flyte \
             $(docker exec flyte-sandbox kubectl get pod -n flyte -l app=minio -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) \
             -- mc ls local/my-s3-bucket/metaflow/ 2>/dev/null | head -20 || echo "(minio not accessible or empty)"
+
+  test-report:
+    if: always()
+    needs: [runner-tests, deployer-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Download all JUnit XML artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: junit-*
+          path: junit-artifacts/
+
+      - name: Publish combined test report
+        uses: dorny/test-reporter@v1
+        with:
+          name: "Test Results — All Backends"
+          path: "junit-artifacts/**/*.xml"
+          reporter: java-junit
+          fail-on-error: false
