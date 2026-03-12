@@ -75,6 +75,7 @@ jobs:
 
       - name: Add coverage comment to PR
         if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
+        continue-on-error: true
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           recreate: true
