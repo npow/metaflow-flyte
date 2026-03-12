@@ -547,24 +547,19 @@ def _run_step_lines(step: StepSpec, is_foreach_body: bool) -> list[str]:
         lines.append("), extra_env=_extra_env)")
         return lines
 
-    # Generate a retry loop for steps with @retry(times=N).
-    # On each attempt, pass the current retry_count to the step subprocess
-    # so Metaflow's ``current.retry_count`` is set correctly.
+    # Derive retry_count from Flyte's native retry mechanism.
+    # Flyte's @task(retries=N) handles the retry loop natively; we just
+    # need to pass the current attempt number to the step subprocess.
     lines = [
-        f"_max_retries: int = {max_retries:d}",
-        "for _attempt in range(_max_retries + 1):",
-        indent + "try:",
-        indent + indent + "_run_cmd(_step_cmd(",
+        "try:",
+        indent + "_retry_count = current_context().retry_count",
+        "except Exception:",
+        indent + "_retry_count = 0",
+        "_run_cmd(_step_cmd(",
     ]
-    for arg in _step_cmd_args("_attempt"):
-        lines.append(indent + indent + indent + arg)
-    lines += [
-        indent + indent + "), extra_env=_extra_env)",
-        indent + indent + "break",
-        indent + "except subprocess.CalledProcessError:",
-        indent + indent + "if _attempt >= _max_retries:",
-        indent + indent + indent + "raise",
-    ]
+    for arg in _step_cmd_args("_retry_count"):
+        lines.append(indent + arg)
+    lines.append("), extra_env=_extra_env)")
     return lines
 
 
