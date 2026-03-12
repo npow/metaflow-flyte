@@ -1,6 +1,6 @@
 [project]
 name = "metaflow-flyte"
-version = "0.4.2"
+version = "0.4.3"
 description = "Run Metaflow flows as Flyte workflows"
 readme = "README.md"
 license = { text = "Apache-2.0" }
