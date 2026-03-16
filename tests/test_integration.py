@@ -332,6 +332,46 @@ class TestCompilation:
         assert "'high'" in content
         assert "'low'" in content
 
+    def test_conditional_flow_router_raises_on_unknown_branch(self, tmp_path):
+        """The else clause in the router must raise, not silently call wrong branch."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_flow.py", out)
+        content = _read_generated(out)
+        assert "raise RuntimeError" in content
+        # Must NOT silently fall through to a branch call
+        assert "else:" in content
+
+    def test_create_multi_step_conditional_flow(self, tmp_path):
+        """Conditional flow with multi-step arms must compile and wire interior steps
+        inside the @dynamic router, not as standalone @workflow steps."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_multi_step_flow.py", out)
+        content = _read_generated(out)
+        # Both arm steps must appear
+        assert "_step_high_a" in content
+        assert "_step_high_b" in content
+        # The router must chain high_a → high_b inside the @dynamic
+        assert "_cond_start_router" in content
+        # high_a and high_b must NOT be wired as standalone 4-space-indented @workflow calls.
+        # Inside the @dynamic they appear at 8-space indent (correct); top-level @workflow
+        # assignments are at exactly 4 spaces.
+        import re
+        standalone = re.findall(r"^    _tid_high_[ab] = _step_high_[ab]\(", content, re.MULTILINE)
+        assert not standalone, f"Interior arm steps wired as standalone workflow nodes: {standalone}"
+        # The final JSON must reference high_b (last step of the arm) not high_a
+        assert "'high_b'" in content
+
+    def test_multi_step_conditional_is_valid_python(self, tmp_path):
+        """Generated multi-step conditional workflow must be syntactically valid Python."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_multi_step_flow.py", out)
+        result = subprocess.run(
+            [sys.executable, "-c", f"import py_compile; py_compile.compile('{out}')"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
 
 # ---------------------------------------------------------------------------
 # Tier 2: Local execution (pyflyte run without cluster)
@@ -466,6 +506,32 @@ class TestConditionalFlow:
         run = _latest_run("ConditionalFlow")
         # The 'high' branch sets result = "high"
         assert run["join"].task.data.final == "high"
+
+
+@pytest.mark.integration
+class TestMultiStepConditionalFlow:
+    def test_multi_step_conditional_completes(self, tmp_path):
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_multi_step_flow.py", out)
+        _run_locally(out, "conditional_multi_step_flow")
+        run = _latest_run("ConditionalMultiStepFlow")
+        assert run is not None
+
+    def test_multi_step_conditional_correct_arm(self, tmp_path):
+        """value=10 > 5, so high_a → high_b arm runs; join.final must be 'high'."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_multi_step_flow.py", out)
+        _run_locally(out, "conditional_multi_step_flow")
+        run = _latest_run("ConditionalMultiStepFlow")
+        assert run["join"].task.data.final == "high"
+
+    def test_multi_step_high_a_ran(self, tmp_path):
+        """The interior arm step high_a must have produced artifacts."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_multi_step_flow.py", out)
+        _run_locally(out, "conditional_multi_step_flow")
+        run = _latest_run("ConditionalMultiStepFlow")
+        assert run["high_a"].task.data.label == "high_a"
 
 
 @pytest.mark.integration

@@ -518,7 +518,12 @@ def trigger(
     params: dict[str, str] = {}
     for kv in run_params:
         k, _, v = kv.partition("=")
-        params[k.strip()] = v.strip()
+        k = k.strip()
+        if not k.replace("-", "_").replace("_", "").isalnum():
+            raise FlyteException(
+                f"Invalid parameter name {k!r}: must be alphanumeric with hyphens/underscores only."
+            )
+        params[k] = v.strip()
 
     flow_name = name or obj.flow.name  # type: ignore[attr-defined]
     run_id = "flyte-local-" + uuid.uuid4().hex[:12]
@@ -544,11 +549,16 @@ def trigger(
         if flyte_endpoint:
             # Remote mode: register and execute on a real Flyte cluster.
             # Write a minimal Flyte config so pyflyte connects to the right endpoint.
+            import re as _re_ep
+            if not _re_ep.match(r'^[a-zA-Z0-9.\-_:/]+$', flyte_endpoint):
+                raise FlyteException(
+                    f"Invalid Flyte endpoint {flyte_endpoint!r}: must be host:port or dns:///host:port."
+                )
             _flyte_cfg_file = tempfile.NamedTemporaryFile(
                 suffix=".yaml", delete=False, mode="w", prefix="flyte_cfg_"
             )
             _flyte_cfg_file.write(
-                f"admin:\n  endpoint: {flyte_endpoint}\n  insecure: true\n"
+                f"admin:\n  endpoint: '{flyte_endpoint}'\n  insecure: true\n"
             )
             _flyte_cfg_file.flush()
             _flyte_cfg_file.close()

@@ -30,6 +30,8 @@ jobs:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
+          # Run all UX flows through the local runner (no Flyte cluster needed).
+          # Validates basic Metaflow runner compat across all flow shapes.
           pytest-args: "-n 4 -v --tb=short --timeout=120 --exec-mode runner --cov-fail-under=0"
           ux-test-config: |
             backends:
@@ -267,9 +269,14 @@ jobs:
           extra-install: "."
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           # No xdist (-n 0): concurrent pyflyte --remote calls can collide.
-          # Only hello_world: basic smoke-test with real Flyte task scheduling.
+          # Run hello_world, branch, foreach, nested_foreach, retry, and the new
+          # condition_multi_step flow to catch correctness regressions across all
+          # supported graph shapes on a real Flyte cluster.
           # timeout=1800: accounts for code upload + Flyte scheduling + image pull.
-          pytest-args: "-n 0 -v --tb=short --timeout=1800 --exec-mode deployer --cov-fail-under=0 -k 'hello_world'"
+          pytest-args: >-
+            -n 0 -v --tb=short --timeout=1800 --exec-mode deployer --cov-fail-under=0
+            -k 'hello_world or branch_flow or foreach_flow or nested_foreach_flow
+                or retry_flow or condition_multi_step_flow'
           test-files: "test_basic.py"
           ux-test-config: |
             backends:

@@ -237,6 +237,34 @@ def _find_foreach_join_step(spec: FlowSpec, foreach_step_name: str) -> StepSpec 
     return None
 
 
+def _compute_condition_arm_chains(
+    condition_branches: dict[str, frozenset[str]],
+    step_by_name: dict[str, StepSpec],
+) -> dict[str, dict[str, list[StepSpec]]]:
+    """For each switch step and each branch, compute the full ordered StepSpec chain
+    from the branch step (inclusive) up to but not including the condition-join step.
+
+    For single-step arms the chain has length 1 (same behaviour as before).
+    For multi-step arms the chain contains every step in the arm in execution order.
+    """
+    result: dict[str, dict[str, list[StepSpec]]] = {}
+    for switch_name, branch_names in condition_branches.items():
+        result[switch_name] = {}
+        for branch_name in branch_names:
+            chain: list[StepSpec] = []
+            current_name: str | None = branch_name
+            seen: set[str] = set()
+            while current_name and current_name not in seen:
+                seen.add(current_name)
+                step = step_by_name.get(current_name)
+                if step is None or step.is_condition_join:
+                    break
+                chain.append(step)
+                current_name = step.out_funcs[0] if step.out_funcs else None
+            result[switch_name][branch_name] = chain
+    return result
+
+
 def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
     """Return the full Python source of a runnable Flyte workflow file."""
     # Pre-compute foreach and conditional (split-switch) info in one pass.
@@ -250,7 +278,28 @@ def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
         elif s.node_type == NodeType.SPLIT_SWITCH:
             condition_branches[s.name] = frozenset(s.out_funcs)
     foreach_body_set = set(foreach_body.values())
-    condition_branch_set: set[str] = set().union(*condition_branches.values()) if condition_branches else set()
+
+    # Compute full arm chains for multi-step conditional branches.
+    condition_arm_chains = _compute_condition_arm_chains(condition_branches, step_by_name)
+    # All steps in any conditional arm — excluded from top-level @workflow wiring so
+    # they are only executed inside the @dynamic condition router.
+    all_condition_arm_steps: set[str] = {
+        step.name
+        for arm_chains in condition_arm_chains.values()
+        for chain in arm_chains.values()
+        for step in chain
+    }
+    # Map every arm step back to its enclosing switch step (used by
+    # _find_switch_step_for_join when the join's in_funcs are deep arm steps).
+    switch_for_arm_step: dict[str, str] = {
+        step.name: switch_name
+        for switch_name, arm_chains in condition_arm_chains.items()
+        for chain in arm_chains.values()
+        for step in chain
+    }
+    # Keep legacy name as alias so nothing below needs changing except the
+    # specific call sites that should use the extended set.
+    condition_branch_set = all_condition_arm_steps
 
     # Detect nested foreach: a foreach body step that is itself a foreach.
     # For each such outer foreach step, record the inner join step that will be
@@ -285,13 +334,13 @@ def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
             inner_join_step = step_by_name[inner_join_name] if inner_join_name else None
             parts.append(_render_foreach_dynamic(step, body_step, inner_join_step))
         elif step.node_type == NodeType.SPLIT_SWITCH:
-            branch_steps = [s for s in spec.steps if s.name in condition_branches[step.name]]
-            parts.append(_render_condition_dynamic(step, branch_steps))
+            parts.append(_render_condition_dynamic(step, condition_arm_chains[step.name]))
 
     parts.append(_render_workflow(
         spec, cfg, foreach_body, foreach_body_set,
         condition_branches, condition_branch_set,
         nested_foreach_joins, steps_consumed_in_dynamic,
+        switch_for_arm_step=switch_for_arm_step,
     ))
 
     if spec.schedule_cron:
@@ -575,8 +624,9 @@ def _return_lines(step: StepSpec, is_condition_branch: bool) -> list[str]:
             f"_branch_taken: str = _read_condition_branch(run_id, {step.name!r}, task_id)",
             "return json.dumps({'task_id': task_id, 'branch_taken': _branch_taken})",
         ]
-    if is_condition_branch:
-        return [f"return json.dumps({{'branch_step': {step.name!r}, 'task_id': task_id}})"]
+    # Condition arm steps (is_condition_branch=True) are called from inside the
+    # @dynamic router, which constructs the final JSON itself.  They return a plain
+    # task_id string like every other step.
     return ["return task_id"]
 
 
@@ -684,32 +734,56 @@ def {fn_name}(run_id: str, foreach_result_json: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
-def _render_condition_dynamic(switch_step: StepSpec, branch_steps: list[StepSpec]) -> str:
-    """Return a ``@dynamic`` function that routes to exactly one branch task.
+def _render_condition_dynamic(
+    switch_step: StepSpec,
+    branch_chains: dict[str, list[StepSpec]],
+) -> str:
+    """Return a ``@dynamic`` function that routes to exactly one branch arm.
 
     The split-switch task returns JSON ``{"task_id": ..., "branch_taken": ...}``.
-    This router inspects ``branch_taken`` at runtime and calls only the matching
-    branch task, returning its JSON so the join step can locate the artifact.
+    This router inspects ``branch_taken`` at runtime and calls every step in the
+    selected arm sequentially, then returns JSON ``{"branch_step": ..., "task_id": ...}``
+    so the join step can locate the final artifact in the arm.
+
+    Multi-step arms (branch_a → transform_a → join) are fully supported: the router
+    executes each step in the chain in order, passing the previous step's task_id as
+    prev_task_id to the next step.
     """
     fn_name = f"_cond_{switch_step.name}_router"
     step_repr = repr(switch_step.name)
+    # Sort branch names for deterministic generated code.
+    branch_names = sorted(branch_chains.keys())
     lines = [
         "@dynamic(**_TASK_KWARGS)",
         f"def {fn_name}(run_id: str, switch_result_json: str) -> str:",
-        f'    """Route to the branch task selected at runtime for step {step_repr}."""',
+        f'    """Route to the branch arm selected at runtime for step {step_repr}."""',
         "    _info = json.loads(switch_result_json)",
         "    _switch_task_id: str = _info['task_id']",
         "    _branch_taken: str = _info['branch_taken']",
     ]
-    branch_names = [bs.name for bs in branch_steps]
-    for i, name in enumerate(branch_names):
+    for i, branch_name in enumerate(branch_names):
+        chain = branch_chains[branch_name]
         keyword = "if" if i == 0 else "elif"
-        lines.append(f"    {keyword} _branch_taken == {name!r}:")
-        lines.append(f"        return {_task_fn(name)}(run_id=run_id, prev_task_id=_switch_task_id)")
+        lines.append(f"    {keyword} _branch_taken == {branch_name!r}:")
+        prev_tid = "_switch_task_id"
+        last_step_name = branch_name
+        for step in chain:
+            tid_var = f"_tid_{step.name}"
+            lines.append(
+                f"        {tid_var} = {_task_fn(step.name)}(run_id=run_id, prev_task_id={prev_tid})"
+            )
+            prev_tid = tid_var
+            last_step_name = step.name
+        lines.append(
+            f"        return json.dumps({{'branch_step': {last_step_name!r}, 'task_id': {prev_tid}}})"
+        )
     if branch_names:
         lines += [
             "    else:",
-            f"        return {_task_fn(branch_names[0])}(run_id=run_id, prev_task_id=_switch_task_id)",
+            f"        raise RuntimeError(",
+            f"            f\"Unexpected branch {{_branch_taken!r}} for step {step_repr}: \"",
+            f"            f\"expected one of {branch_names!r}\"",
+            f"        )",
         ]
     else:
         lines.append("    return json.dumps({'branch_step': '', 'task_id': _switch_task_id})")
@@ -730,6 +804,7 @@ def _render_workflow(
     condition_branch_set: set[str],
     nested_foreach_joins: dict[str, str] | None = None,
     steps_consumed_in_dynamic: set[str] | None = None,
+    switch_for_arm_step: dict[str, str] | None = None,
 ) -> str:
     """Return the ``@workflow`` function source."""
     nfj = nested_foreach_joins or {}
@@ -826,7 +901,9 @@ def _render_workflow(
             lines.append(f"    {var} = {_task_fn(step.name)}(run_id=run_id{in_kwargs})")
 
         elif step.is_condition_join:
-            switch_step_name = _find_switch_step_for_join(step, condition_branches)
+            switch_step_name = _find_switch_step_for_join(
+                step, condition_branches, switch_for_arm_step
+            )
             branch_result_var = f"_cond_routed_tid_{switch_step_name}"
             lines.append(
                 f"    {var} = {_task_fn(step.name)}(run_id=run_id, _branch_result_json={branch_result_var})"
@@ -967,17 +1044,24 @@ def _workflow_signature(params: Sequence[ParameterSpec]) -> str:
 def _find_switch_step_for_join(
     join_step: StepSpec,
     condition_branches: dict[str, frozenset[str]],
+    switch_for_arm_step: dict[str, str] | None = None,
 ) -> str:
     """Return the split-switch step name whose branches converge at *join_step*.
 
-    Walks the join's in_funcs (direct branch predecessors) and finds which
-    split-switch step feeds one of those branches.
+    Handles both single-step arms (join.in_funcs contains an immediate branch
+    child) and multi-step arms (join.in_funcs contains a deeper interior arm step).
     """
+    # Direct match: join.in_funcs contains an immediate branch child.
     for switch_name, branches in condition_branches.items():
         for branch_name in join_step.in_funcs:
             if branch_name in branches:
                 return switch_name
-    # Fallback: use the first in_func's in_funcs (walk one level up)
+    # Indirect match: join.in_funcs contains a deeper arm step (multi-step arm).
+    if switch_for_arm_step:
+        for in_f in join_step.in_funcs:
+            if in_f in switch_for_arm_step:
+                return switch_for_arm_step[in_f]
+    # Fallback: walk one level up (legacy behaviour, rarely reached).
     if join_step.in_funcs:
         return join_step.in_funcs[0]
     return "start"

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from metaflow_extensions.flyte.plugins.flyte._codegen import (
+    _compute_condition_arm_chains,
     _find_switch_step_for_join,
     _task_decorator,
     _wf_fn,
@@ -415,6 +416,78 @@ class TestFindSwitchStepForJoin:
         join = self._step("join", in_funcs=("prev",))
         assert _find_switch_step_for_join(join, {}) == "prev"
 
+    def test_deep_arm_step_resolved_via_switch_for_arm_step(self):
+        """Multi-step arm: join.in_funcs = [last_arm_step], not an immediate branch child.
+        _find_switch_step_for_join must find the switch via switch_for_arm_step."""
+        join = self._step("join", in_funcs=("high_b",))
+        branches = {"start": frozenset({"high_a", "low"})}
+        # high_b is a deeper interior arm step, not an immediate branch child
+        switch_for_arm_step = {"high_a": "start", "high_b": "start", "low": "start"}
+        result = _find_switch_step_for_join(join, branches, switch_for_arm_step)
+        assert result == "start"
+
+    def test_direct_match_takes_priority_over_deep_arm(self):
+        """Direct branch child match wins over switch_for_arm_step lookup."""
+        join = self._step("join", in_funcs=("high_a",))
+        branches = {"start": frozenset({"high_a", "low"})}
+        switch_for_arm_step = {"high_a": "start", "low": "start"}
+        assert _find_switch_step_for_join(join, branches, switch_for_arm_step) == "start"
+
+
+# ---------------------------------------------------------------------------
+# _compute_condition_arm_chains: multi-step arm chain computation
+# ---------------------------------------------------------------------------
+
+
+class TestComputeConditionArmChains:
+    def _make_step(self, name, is_condition_join=False, out_funcs=()):
+        return StepSpec(
+            name=name,
+            node_type=NodeType.LINEAR,
+            in_funcs=(),
+            out_funcs=out_funcs,
+            split_parents=(),
+            max_user_code_retries=0,
+            is_foreach_join=False,
+            is_split_join=False,
+            is_condition_join=is_condition_join,
+            switch_cases=(),
+            timeout_seconds=None,
+            env_vars=(),
+        )
+
+    def test_single_step_arm_has_chain_length_one(self):
+        high = self._make_step("high", out_funcs=("join",))
+        low = self._make_step("low", out_funcs=("join",))
+        join = self._make_step("join", is_condition_join=True)
+        step_by_name = {"high": high, "low": low, "join": join}
+        branches = {"start": frozenset({"high", "low"})}
+        chains = _compute_condition_arm_chains(branches, step_by_name)
+        assert len(chains["start"]["high"]) == 1
+        assert chains["start"]["high"][0].name == "high"
+        assert len(chains["start"]["low"]) == 1
+
+    def test_multi_step_arm_has_full_chain(self):
+        """high_a → high_b → join: chain for 'high_a' must be [high_a, high_b]."""
+        high_a = self._make_step("high_a", out_funcs=("high_b",))
+        high_b = self._make_step("high_b", out_funcs=("join",))
+        low = self._make_step("low", out_funcs=("join",))
+        join = self._make_step("join", is_condition_join=True)
+        step_by_name = {"high_a": high_a, "high_b": high_b, "low": low, "join": join}
+        branches = {"start": frozenset({"high_a", "low"})}
+        chains = _compute_condition_arm_chains(branches, step_by_name)
+        high_chain = chains["start"]["high_a"]
+        assert [s.name for s in high_chain] == ["high_a", "high_b"]
+
+    def test_join_step_not_included_in_chain(self):
+        """The condition-join step itself must not be in any arm chain."""
+        high = self._make_step("high", out_funcs=("join",))
+        join = self._make_step("join", is_condition_join=True)
+        step_by_name = {"high": high, "join": join}
+        branches = {"start": frozenset({"high"})}
+        chains = _compute_condition_arm_chains(branches, step_by_name)
+        assert all(s.name != "join" for s in chains["start"]["high"])
+
 
 # ---------------------------------------------------------------------------
 # _wf_fn: CamelCase → snake_case edge cases
@@ -433,6 +506,20 @@ class TestWfFn:
 
     def test_single_word(self):
         assert _wf_fn("Flow") == "flow"
+
+    def test_numbers_in_name(self):
+        """Numbers should not introduce spurious underscores."""
+        assert _wf_fn("Flow2023") == "flow2023"
+
+    def test_leading_capital_only(self):
+        assert _wf_fn("Flow") == "flow"
+
+    def test_consecutive_caps_produce_underscores(self):
+        """MLPipeline → m_l_pipeline (each cap-after-cap gets an underscore)."""
+        result = _wf_fn("MLPipeline")
+        # The regex inserts _ before every capital that follows another char,
+        # so M-L-Pipeline → m_l_pipeline
+        assert result == "m_l_pipeline"
 
 
 # ---------------------------------------------------------------------------

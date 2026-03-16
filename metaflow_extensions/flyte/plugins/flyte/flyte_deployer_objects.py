@@ -358,6 +358,7 @@ class FlyteDeployedFlow(DeployedFlow):
         # This is needed for the direct deploy→trigger path (not only from_deployment).
         _additional_info = getattr(self.deployer, "additional_info", {}) or {}
         _saved_env = _additional_info.get("saved_env", {})
+        _orig_env = self.deployer.env_vars  # save to restore after the run
         if _saved_env:
             import copy as _copy
             import json as _json
@@ -387,49 +388,54 @@ class FlyteDeployedFlow(DeployedFlow):
             _env.update(_merged)
             self.deployer.env_vars = _env
 
-        with temporary_fifo() as (attribute_file_path, attribute_file_fd):
-            # Pass the plain flow class name (e.g. "HelloFlow"), not the JSON
-            # recovery identifier stored in self.name, so that the trigger CLI
-            # can pass it to _wf_fn() to derive the pyflyte workflow function name.
-            trigger_kwargs: dict = {"name": self.flow_name, "deployer_attribute_file": attribute_file_path}
-            if run_params:
-                trigger_kwargs["run_params"] = run_params
-            # Propagate --branch so @project flows use the same branch in the
-            # re-compiled trigger as they did in the original create().
-            branch = self.deployer.top_level_kwargs.get("branch")
-            if branch:
-                trigger_kwargs["branch"] = branch
-            # Propagate remote-mode settings from additional_info (set by create()).
-            _additional_info = getattr(self.deployer, "additional_info", {}) or {}
-            if _additional_info.get("flyte_endpoint"):
-                trigger_kwargs["flyte_endpoint"] = _additional_info["flyte_endpoint"]
-            if _additional_info.get("image"):
-                trigger_kwargs["image"] = _additional_info["image"]
-            if _additional_info.get("container_flows_dir"):
-                trigger_kwargs["container_flows_dir"] = _additional_info["container_flows_dir"]
-            if _additional_info.get("container_sysroot"):
-                trigger_kwargs["container_sysroot"] = _additional_info["container_sysroot"]
-            command = get_lower_level_group(
-                self.deployer.api,
-                self.deployer.top_level_kwargs,
-                self.deployer.TYPE,
-                self.deployer.deployer_kwargs,
-            ).trigger(**trigger_kwargs)
+        try:
+            with temporary_fifo() as (attribute_file_path, attribute_file_fd):
+                # Pass the plain flow class name (e.g. "HelloFlow"), not the JSON
+                # recovery identifier stored in self.name, so that the trigger CLI
+                # can pass it to _wf_fn() to derive the pyflyte workflow function name.
+                trigger_kwargs: dict = {"name": self.flow_name, "deployer_attribute_file": attribute_file_path}
+                if run_params:
+                    trigger_kwargs["run_params"] = run_params
+                # Propagate --branch so @project flows use the same branch in the
+                # re-compiled trigger as they did in the original create().
+                branch = self.deployer.top_level_kwargs.get("branch")
+                if branch:
+                    trigger_kwargs["branch"] = branch
+                # Propagate remote-mode settings from additional_info (set by create()).
+                _additional_info = getattr(self.deployer, "additional_info", {}) or {}
+                if _additional_info.get("flyte_endpoint"):
+                    trigger_kwargs["flyte_endpoint"] = _additional_info["flyte_endpoint"]
+                if _additional_info.get("image"):
+                    trigger_kwargs["image"] = _additional_info["image"]
+                if _additional_info.get("container_flows_dir"):
+                    trigger_kwargs["container_flows_dir"] = _additional_info["container_flows_dir"]
+                if _additional_info.get("container_sysroot"):
+                    trigger_kwargs["container_sysroot"] = _additional_info["container_sysroot"]
+                command = get_lower_level_group(
+                    self.deployer.api,
+                    self.deployer.top_level_kwargs,
+                    self.deployer.TYPE,
+                    self.deployer.deployer_kwargs,
+                ).trigger(**trigger_kwargs)
 
-            pid = self.deployer.spm.run_command(
-                [sys.executable, *command],
-                env=self.deployer.env_vars,
-                cwd=self.deployer.cwd,
-                show_output=self.deployer.show_output,
-            )
+                pid = self.deployer.spm.run_command(
+                    [sys.executable, *command],
+                    env=self.deployer.env_vars,
+                    cwd=self.deployer.cwd,
+                    show_output=self.deployer.show_output,
+                )
 
-            command_obj = self.deployer.spm.get(pid)
-            content = handle_timeout(
-                attribute_file_fd, command_obj, self.deployer.file_read_timeout
-            )
-            command_obj.sync_wait()
-            if command_obj.process.returncode == 0:
-                return FlyteTriggeredRun(deployer=self.deployer, content=content)
+                command_obj = self.deployer.spm.get(pid)
+                content = handle_timeout(
+                    attribute_file_fd, command_obj, self.deployer.file_read_timeout
+                )
+                command_obj.sync_wait()
+                if command_obj.process.returncode == 0:
+                    return FlyteTriggeredRun(deployer=self.deployer, content=content)
+        finally:
+            # Restore original env_vars so repeated .run() calls don't accumulate
+            # saved_env entries from previous executions.
+            self.deployer.env_vars = _orig_env
 
         raise RuntimeError(
             f"Error triggering Flyte execution for flow {self.deployer.flow_file!r}"
