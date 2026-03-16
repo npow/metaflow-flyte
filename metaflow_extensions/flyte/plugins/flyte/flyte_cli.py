@@ -884,13 +884,20 @@ def resume(
         _pyflyte = os.path.join(os.path.dirname(sys.executable), "pyflyte")
         if not os.path.isfile(_pyflyte):
             _pyflyte = "pyflyte"
-        # Pass origin_run_id so _mf_generate_run_id reuses the failed run's ID,
-        # allowing Metaflow to skip steps whose artifacts already exist.
-        cmd = [_pyflyte, "run", tmp_path, wf_name, "--origin_run_id", clone_run_id]
+        # METAFLOW_FLYTE_LOCAL_RUN_ID: the new run_id for this resume execution
+        #   (written to Metaflow datastore; reported in the deployer pathspec).
+        # METAFLOW_FLYTE_CLONE_RUN_ID: the source run to clone artifacts from;
+        #   _step_cmd() appends --clone-run-id to each step subprocess so
+        #   Metaflow skips steps whose outputs already exist in the clone source.
+        cmd = [_pyflyte, "run", tmp_path, wf_name]
         for k, v in params.items():
             cmd += [f"--{k}", v]
 
-        env = {**os.environ, "METAFLOW_FLYTE_LOCAL_RUN_ID": run_id}
+        env = {
+            **os.environ,
+            "METAFLOW_FLYTE_LOCAL_RUN_ID": run_id,
+            "METAFLOW_FLYTE_CLONE_RUN_ID": clone_run_id,
+        }
         obj.echo("Resuming from run {}: {}".format(clone_run_id, " ".join(cmd)), bold=True)  # type: ignore[attr-defined]
         result = subprocess.run(cmd, env=env, capture_output=True, text=True)
         if result.returncode != 0:

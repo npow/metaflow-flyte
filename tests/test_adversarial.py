@@ -28,7 +28,7 @@ from metaflow_extensions.flyte.plugins.flyte._graph import (
     _validate,
 )
 from metaflow_extensions.flyte.plugins.flyte._types import NodeType, StepSpec
-from metaflow_extensions.flyte.plugins.flyte.exception import NotSupportedException
+from metaflow_extensions.flyte.plugins.flyte.exception import FlyteException, NotSupportedException
 
 FLOWS_DIR = Path(__file__).parent / "flows"
 
@@ -547,6 +547,104 @@ def _compile(flow_path: Path, out: Path, extra_args: list[str] | None = None) ->
 
 def _read(path: Path) -> str:
     return path.read_text()
+
+
+class TestTripleNestedForeachRaises:
+    """3-level nested foreach must raise NotSupportedException at codegen time."""
+
+    def _make_step(self, name, node_type=NodeType.LINEAR, out_funcs=(), in_funcs=(),
+                   is_foreach_join=False, split_parents=()):
+        return StepSpec(
+            name=name, node_type=node_type, in_funcs=in_funcs, out_funcs=out_funcs,
+            split_parents=split_parents, max_user_code_retries=0,
+            is_foreach_join=is_foreach_join, is_split_join=False, is_condition_join=False,
+            switch_cases=(), timeout_seconds=None, env_vars=(),
+        )
+
+    def test_three_level_foreach_raises(self):
+        """A flow with outer→mid→inner foreach nesting (3 levels) must raise."""
+        from metaflow_extensions.flyte.plugins.flyte._codegen import generate_flyte_file
+        from metaflow_extensions.flyte.plugins.flyte._types import FlowSpec, FlyteFlowConfig
+        outer = self._make_step("outer", NodeType.FOREACH, out_funcs=("mid",), in_funcs=("start",))
+        mid = self._make_step("mid", NodeType.FOREACH, out_funcs=("inner",), in_funcs=("outer",))
+        inner = self._make_step("inner", NodeType.LINEAR, out_funcs=("inner_join",), in_funcs=("mid",))
+        inner_join = self._make_step("inner_join", NodeType.JOIN, out_funcs=("mid_join",),
+                                     in_funcs=("inner",), is_foreach_join=True, split_parents=("mid",))
+        mid_join = self._make_step("mid_join", NodeType.JOIN, out_funcs=("outer_join",),
+                                   in_funcs=("inner_join",), is_foreach_join=True, split_parents=("outer",))
+        start = self._make_step("start", NodeType.FOREACH, out_funcs=("outer",))
+        outer_join = self._make_step("outer_join", NodeType.JOIN, out_funcs=("end",),
+                                     in_funcs=("mid_join",), is_foreach_join=True, split_parents=("start",))
+        end = self._make_step("end", NodeType.END, in_funcs=("outer_join",))
+        spec = FlowSpec(
+            name="TripleFlow",
+            steps=(start, outer, mid, inner, inner_join, mid_join, outer_join, end),
+            parameters=(),
+        )
+        cfg = FlyteFlowConfig(flow_file="/tmp/flow.py", datastore_type="local")
+        with pytest.raises(NotSupportedException, match="3\\+"):
+            generate_flyte_file(spec, cfg)
+
+
+# ---------------------------------------------------------------------------
+# Retry-count passed to _emit_deck and _read_condition_branch
+# ---------------------------------------------------------------------------
+
+
+class TestRetryCountPropagation:
+    def test_emit_deck_receives_retry_count_for_retried_step(self, tmp_path):
+        """Steps with @retry must call _emit_deck with attempt=_retry_count."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "retry_flow.py", out)
+        content = _read(out)
+        # The flaky step has retries > 0, so _retry_count is read from context
+        assert "attempt=_retry_count" in content
+        # _retry_count must be defined even for non-retried steps
+        assert "_retry_count = 0" in content or "_retry_count = current_context" in content
+
+    def test_no_retry_step_still_defines_retry_count(self, tmp_path):
+        """Non-retried steps must define _retry_count=0 so _emit_deck compiles."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "linear_flow.py", out)
+        content = _read(out)
+        assert "_retry_count = 0" in content
+        assert "attempt=_retry_count" in content
+
+    def test_condition_branch_passes_retry_count(self, tmp_path):
+        """_read_condition_branch must receive attempt=_retry_count."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "condition_flow.py", out)
+        content = _read(out)
+        assert "_read_condition_branch(" in content
+        assert "attempt=_retry_count" in content
+
+
+# ---------------------------------------------------------------------------
+# Resume: --clone-run-id in _step_cmd + METAFLOW_FLYTE_LOCAL_RUN_ID priority
+# ---------------------------------------------------------------------------
+
+
+class TestResumeGeneration:
+    def test_step_cmd_includes_clone_run_id(self, tmp_path):
+        """Generated _step_cmd must append --clone-run-id when METAFLOW_FLYTE_CLONE_RUN_ID is set."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "linear_flow.py", out)
+        content = _read(out)
+        assert "METAFLOW_FLYTE_CLONE_RUN_ID" in content
+        assert "--clone-run-id" in content
+
+    def test_run_id_task_does_not_return_origin_run_id_directly(self, tmp_path):
+        """_mf_generate_run_id must NOT return origin_run_id directly as the run_id.
+        Previously `if origin_run_id: return origin_run_id` caused the resume
+        pathspec to point to the OLD run rather than the new one."""
+        out = tmp_path / "workflow.py"
+        _compile(FLOWS_DIR / "linear_flow.py", out)
+        content = _read(out)
+        # The function must not have `if origin_run_id: return origin_run_id`
+        assert "if origin_run_id:" not in content or "return origin_run_id" not in content
+        # METAFLOW_FLYTE_LOCAL_RUN_ID must be read and returned when set
+        assert "METAFLOW_FLYTE_LOCAL_RUN_ID" in content
+        assert "if seeded:" in content
 
 
 class TestAdversarialCompilation:

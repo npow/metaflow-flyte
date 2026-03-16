@@ -42,6 +42,7 @@ from metaflow_extensions.flyte.plugins.flyte._types import (
     TriggerOnFinishSpec,
     TriggerSpec,
 )
+from metaflow_extensions.flyte.plugins.flyte.exception import NotSupportedException
 
 # ---------------------------------------------------------------------------
 # Static sections — embedded verbatim in every generated file
@@ -85,15 +86,19 @@ def _run_cmd(cmd: list[str], extra_env: dict[str, str] | None = None) -> None:
         raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
-def _mf_artifact_names(run_id: str, step_name: str, task_id: str) -> list[str]:
-    """Return user-defined artifact names (no values loaded)."""
+def _mf_artifact_names(run_id: str, step_name: str, task_id: str, attempt: int = 0) -> list[str]:
+    """Return user-defined artifact names (no values loaded).
+
+    ``attempt`` should be the Flyte retry count so that retried steps return
+    artifacts from the successful attempt rather than the failed attempt=0.
+    """
     try:
         from metaflow.datastore import FlowDataStore
         from metaflow.plugins import DATASTORES
         _impl = next(d for d in DATASTORES if d.TYPE == DATASTORE_TYPE)
         _root = _impl.get_datastore_root_from_config(lambda *a: None)
         _fds = FlowDataStore(FLOW_NAME, None, storage_impl=_impl, ds_root=_root)
-        _tds = _fds.get_task_datastore(run_id, step_name, task_id, attempt=0, mode='r')
+        _tds = _fds.get_task_datastore(run_id, step_name, task_id, attempt=attempt, mode='r')
         _SKIP = {'name', 'input'}
         return [n for n in _tds if not n.startswith('_') and n not in _SKIP]
     except Exception:
@@ -140,6 +145,11 @@ def _step_cmd(
         cmd += ["--namespace", NAMESPACE]
     if split_index is not None:
         cmd += ["--split-index", str(split_index)]
+    # Resume: clone already-completed step artifacts from the original run so
+    # Metaflow skips re-executing those steps.  Set by "flyte resume".
+    _clone_run_id = os.environ.get('METAFLOW_FLYTE_CLONE_RUN_ID')
+    if _clone_run_id:
+        cmd += ["--clone-run-id", _clone_run_id]
     return cmd
 
 
@@ -156,15 +166,19 @@ def _flyte_env() -> dict[str, str]:
     return env
 
 
-def _read_condition_branch(run_id: str, step_name: str, task_id: str) -> str:
-    """Read the _transition artifact to determine which branch was taken."""
+def _read_condition_branch(run_id: str, step_name: str, task_id: str, attempt: int = 0) -> str:
+    """Read the _transition artifact to determine which branch was taken.
+
+    ``attempt`` must match the Flyte retry count so retried switch steps return
+    the branch decision from the successful attempt, not the failed attempt=0.
+    """
     try:
         from metaflow.datastore import FlowDataStore
         from metaflow.plugins import DATASTORES
         _impl = next(d for d in DATASTORES if d.TYPE == DATASTORE_TYPE)
         _root = _impl.get_datastore_root_from_config(lambda *a: None)
         _fds = FlowDataStore(FLOW_NAME, None, storage_impl=_impl, ds_root=_root)
-        _tds = _fds.get_task_datastore(run_id, step_name, task_id, attempt=0, mode='r')
+        _tds = _fds.get_task_datastore(run_id, step_name, task_id, attempt=attempt, mode='r')
         _transition = _tds['_transition']
         # _transition is a list of step names; return the first one as the branch taken
         if isinstance(_transition, (list, tuple)) and _transition:
@@ -174,10 +188,14 @@ def _read_condition_branch(run_id: str, step_name: str, task_id: str) -> str:
         return ''
 
 
-def _emit_deck(run_id: str, step_name: str, task_id: str) -> None:
-    """Render Metaflow artifact retrieval snippets in the Flyte UI Deck."""
+def _emit_deck(run_id: str, step_name: str, task_id: str, attempt: int = 0) -> None:
+    """Render Metaflow artifact retrieval snippets in the Flyte UI Deck.
+
+    ``attempt`` must match the Flyte retry count so the Deck shows artifacts
+    from the successful attempt rather than the (possibly empty) attempt=0.
+    """
     try:
-        artifact_names = _mf_artifact_names(run_id, step_name, task_id)
+        artifact_names = _mf_artifact_names(run_id, step_name, task_id, attempt=attempt)
         pathspec = f'{FLOW_NAME}/{run_id}/{step_name}/{task_id}'
         html = f'<h3>Metaflow Artifacts &mdash; <code>{pathspec}</code></h3>'
         if artifact_names:
@@ -204,14 +222,13 @@ _RUN_ID_TASK = '''\
 
 @_mf_task()
 def _mf_generate_run_id(origin_run_id: str = '') -> str:
-    # If a prior run_id is supplied (e.g. via Flyte --recover), reuse it so
-    # Metaflow treats this execution as a resume of the original run.
-    if origin_run_id:
-        return origin_run_id
+    # METAFLOW_FLYTE_LOCAL_RUN_ID takes priority — it is set by "flyte trigger"
+    # and "flyte resume" and is the intended new run_id for this execution.
+    # origin_run_id (accepted for backwards compat with Flyte --recover) is now
+    # used as the clone source via METAFLOW_FLYTE_CLONE_RUN_ID, not as the run_id.
     try:
         ctx = current_context()
         name = ctx.execution_id.name
-        # Check for a pre-seeded run ID (set by local trigger for deterministic pathspec).
         seeded = os.environ.get('METAFLOW_FLYTE_LOCAL_RUN_ID')
         if seeded:
             return seeded
@@ -308,6 +325,20 @@ def generate_flyte_file(spec: FlowSpec, cfg: FlyteFlowConfig) -> str:
     #
     # nested_foreach_joins: outer_foreach_step_name -> inner_join_step_name
     # steps_consumed_in_dynamic: set of step names executed inside an outer dynamic
+    # Guard against 3+ level nested foreach — the current architecture only
+    # generates correct code for up to 2 levels of nesting.
+    for s in spec.steps:
+        if s.node_type == NodeType.FOREACH:
+            body_name = foreach_body.get(s.name)
+            if body_name and body_name in foreach_body:
+                inner_body = foreach_body.get(body_name)
+                if inner_body and inner_body in foreach_body:
+                    raise NotSupportedException(
+                        f"3+ levels of nested foreach ('{s.name}' → '{body_name}' → "
+                        f"'{inner_body}') are not yet supported by the Flyte integration. "
+                        "Maximum supported nesting depth is 2."
+                    )
+
     nested_foreach_joins: dict[str, str] = {}
     steps_consumed_in_dynamic: set[str] = set()
     for s in spec.steps:
@@ -590,7 +621,12 @@ def _run_step_lines(step: StepSpec, is_foreach_body: bool) -> list[str]:
         return args
 
     if max_retries == 0:
-        lines = ["_run_cmd(_step_cmd("]
+        # Always define _retry_count so _emit_deck and _read_condition_branch
+        # can reference it unconditionally.
+        lines = [
+            "_retry_count = 0",
+            "_run_cmd(_step_cmd(",
+        ]
         for arg in _step_cmd_args("0"):
             lines.append(indent + arg)
         lines.append("), extra_env=_extra_env)")
@@ -621,7 +657,7 @@ def _return_lines(step: StepSpec, is_condition_branch: bool) -> list[str]:
         ]
     if step.node_type == NodeType.SPLIT_SWITCH:
         return [
-            f"_branch_taken: str = _read_condition_branch(run_id, {step.name!r}, task_id)",
+            f"_branch_taken: str = _read_condition_branch(run_id, {step.name!r}, task_id, attempt=_retry_count)",
             "return json.dumps({'task_id': task_id, 'branch_taken': _branch_taken})",
         ]
     # Condition arm steps (is_condition_branch=True) are called from inside the
@@ -649,7 +685,7 @@ def _render_task(
         + _input_paths_lines(step, spec, foreach_body, is_start, nested_foreach_joins)
         + _extra_env_lines(step)
         + _run_step_lines(step, is_foreach_body)
-        + [f"_emit_deck(run_id, {step.name!r}, task_id)"]
+        + [f"_emit_deck(run_id, {step.name!r}, task_id, attempt=_retry_count)"]
         + _return_lines(step, is_condition_branch)
     )
 
