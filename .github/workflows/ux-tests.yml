@@ -273,10 +273,7 @@ jobs:
           # condition_multi_step flow to catch correctness regressions across all
           # supported graph shapes on a real Flyte cluster.
           # timeout=1800: accounts for code upload + Flyte scheduling + image pull.
-          pytest-args: >-
-            -n 0 -v --tb=short --timeout=1800 --exec-mode deployer --cov-fail-under=0
-            -k 'hello_world or branch_flow or foreach_flow or nested_foreach_flow
-                or retry_flow or condition_multi_step_flow'
+          pytest-args: "-n 0 -v --tb=short --timeout=1800 --exec-mode deployer --cov-fail-under=0 -k 'hello_world or branch_flow or foreach_flow or nested_foreach_flow or retry_flow or condition_multi_step_flow'"
           test-files: "test_basic.py"
           ux-test-config: |
             backends:
