@@ -28,7 +28,7 @@ from metaflow_extensions.flyte.plugins.flyte._graph import (
     _validate,
 )
 from metaflow_extensions.flyte.plugins.flyte._types import NodeType, StepSpec
-from metaflow_extensions.flyte.plugins.flyte.exception import FlyteException, NotSupportedException
+from metaflow_extensions.flyte.plugins.flyte.exception import NotSupportedException
 
 FLOWS_DIR = Path(__file__).parent / "flows"
 

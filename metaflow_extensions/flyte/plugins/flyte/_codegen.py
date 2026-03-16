@@ -816,10 +816,10 @@ def _render_condition_dynamic(
     if branch_names:
         lines += [
             "    else:",
-            f"        raise RuntimeError(",
+            "        raise RuntimeError(",
             f"            f\"Unexpected branch {{_branch_taken!r}} for step {step_repr}: \"",
             f"            f\"expected one of {branch_names!r}\"",
-            f"        )",
+            "        )",
         ]
     else:
         lines.append("    return json.dumps({'branch_step': '', 'task_id': _switch_task_id})")
