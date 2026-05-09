@@ -25,9 +25,9 @@ jobs:
           python-version: "3.11"
       - name: Pin Metaflow local datastore root
         run: echo "METAFLOW_DATASTORE_SYSROOT_LOCAL=$HOME" >> "$GITHUB_ENV"
-      - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
+      - uses: Netflix/metaflow/.github/actions/run-ux-tests@master
         with:
-          metaflow-ref: npow/corral-devstack
+          metaflow-ref: master
           extra-install: "."
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           # Run all UX flows through the local runner (no Flyte cluster needed).
@@ -73,7 +73,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Netflix/metaflow
-          ref: npow/corral-devstack
+          ref: master
           path: _metaflow_src
 
       - name: Install flytectl
@@ -247,7 +247,7 @@ jobs:
           echo "=== PodTemplate default ==="
           docker exec flyte-sandbox kubectl get podtemplate default -n flytesnacks-development -o yaml 2>/dev/null | head -40 || echo "(not found)"
 
-      - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
+      - uses: Netflix/metaflow/.github/actions/run-ux-tests@master
         env:
           # FLYTECTL_CONFIG tells pyflyte where to find the Flyte Admin endpoint
           # and the MinIO storage backend for fast-serialization code bundles.
@@ -265,7 +265,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: miniostorage
           AWS_DEFAULT_REGION: us-east-1
         with:
-          metaflow-ref: npow/corral-devstack
+          metaflow-ref: master
           extra-install: "."
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           # No xdist (-n 0): concurrent pyflyte --remote calls can collide.
