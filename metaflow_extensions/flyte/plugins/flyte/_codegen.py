@@ -675,7 +675,7 @@ def _render_task(
     nested_foreach_joins: dict[str, str] | None = None,
 ) -> str:
     """Return the full ``@_mf_task(...)`` function source for *step*."""
-    is_start = step.name == "start"
+    is_start = step.is_start
     is_foreach_body = step.name in foreach_body_set
     is_condition_branch = step.name in condition_branch_set
     indent = "    "
@@ -859,7 +859,7 @@ def _render_workflow(
 
     for step in spec.steps:
         var = f"_tid_{step.name}"
-        is_start = step.name == "start"
+        is_start = step.is_start
 
         if step.name in foreach_body_set:
             continue  # already registered / executed inside the outer foreach block

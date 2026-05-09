@@ -179,7 +179,13 @@ def _topological_order(graph: Any) -> list[StepSpec]:
     """BFS from *start* yielding ``StepSpec`` objects in topological order."""
     visited: set[str] = set()
     result: list[StepSpec] = []
-    queue: deque[str] = deque(["start"])
+    # Metaflow >= 2.19.x exposes graph.start_step / graph.end_step which honor
+    # the @step(start=True) / @step(end=True) annotations introduced in PR
+    # Netflix/metaflow#3120. Fall back to the literal names "start"/"end" for
+    # older metaflow versions that lack the attributes.
+    start_name = getattr(graph, "start_step", None) or "start"
+    end_name = getattr(graph, "end_step", None) or "end"
+    queue: deque[str] = deque([start_name])
 
     while queue:
         name = queue.popleft()
@@ -219,6 +225,8 @@ def _topological_order(graph: Any) -> list[StepSpec]:
             out_funcs=tuple(node.out_funcs),
             split_parents=tuple(node.split_parents),
             max_user_code_retries=_max_user_code_retries(node),
+            is_start=(node.name == start_name),
+            is_end=(node.name == end_name),
             is_foreach_join=_is_foreach_join(graph, node),
             is_split_join=_is_split_join(graph, node),
             is_condition_join=_is_condition_join(graph, node),

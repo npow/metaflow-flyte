@@ -37,6 +37,8 @@ class StepSpec:
     out_funcs: tuple[str, ...]      # downstream step names
     split_parents: tuple[str, ...]  # ancestors that opened the current fork
     max_user_code_retries: int = 0
+    is_start: bool = False           # entry step (named "start" or @step(start=True))
+    is_end: bool = False             # terminal step (named "end" or @step(end=True))
     is_foreach_join: bool = False    # join that closes a foreach
     is_split_join: bool = False      # join that closes a static split
     is_condition_join: bool = False  # join that closes a split-switch (conditional)
