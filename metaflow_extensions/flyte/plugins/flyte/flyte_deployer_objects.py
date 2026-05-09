@@ -73,6 +73,12 @@ class _RemoteStep:
         self._task: _RemoteTask | None = None
 
     @property
+    def id(self) -> str:
+        # Mirrors metaflow.Step.id, which returns the step name. Required by
+        # ux/core test assertions that iterate ``run`` and collect step ids.
+        return self._step_name
+
+    @property
     def task(self) -> _RemoteTask:
         if self._task is None:
             self._task = self._load_task()
@@ -169,6 +175,34 @@ class _RemoteFlowRun:
         if fds is None:
             raise KeyError(f"Cannot access step {step_name!r}: S3 datastore not available")
         return _RemoteStep(fds, self._flow_name, self._run_id, step_name)
+
+    def __iter__(self):
+        # Discover step names by listing the run prefix in S3. Path layout:
+        #   {sysroot}/{flow_name}/{run_id}/{step_name}/{task_id}/...
+        # Yields a _RemoteStep per discovered step. Required so that test code
+        # like ``{step.id for step in run}`` works against a Flyte execution
+        # whose Metaflow metadata is not accessible from the test runner.
+        fds = self._get_fds()
+        if fds is None:
+            return
+        storage_impl = fds._storage_impl  # type: ignore[attr-defined]
+        prefix = storage_impl.path_join(self._flow_name, self._run_id) + "/"
+        seen: set[str] = set()
+        try:
+            contents = list(storage_impl.list_content([prefix]))
+        except Exception:
+            return
+        for item in contents:
+            remainder = item.path[len(prefix):].lstrip("/")
+            if not remainder:
+                continue
+            step_name = remainder.split("/")[0]
+            # Skip the "_parameters" pseudo-step that Metaflow writes for
+            # flow parameters; metaflow.Run iteration also excludes it.
+            if step_name == "_parameters" or step_name in seen:
+                continue
+            seen.add(step_name)
+            yield _RemoteStep(fds, self._flow_name, self._run_id, step_name)
 
     def __bool__(self) -> bool:
         return True
