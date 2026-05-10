@@ -73,6 +73,12 @@ class _RemoteStep:
         self._task: _RemoteTask | None = None
 
     @property
+    def id(self) -> str:
+        # Mirrors metaflow.Step.id, which returns the step name. Required by
+        # ux/core test assertions that iterate ``run`` and collect step ids.
+        return self._step_name
+
+    @property
     def task(self) -> _RemoteTask:
         if self._task is None:
             self._task = self._load_task()
@@ -118,13 +124,24 @@ class _RemoteFlowRun:
     ``wait_for_deployed_run`` and the basic deployer-test assertions.
     """
 
-    def __init__(self, pathspec: str, env_vars: dict) -> None:
+    def __init__(
+        self,
+        pathspec: str,
+        env_vars: dict,
+        start_step: str | None = None,
+        end_step: str | None = None,
+    ) -> None:
         self._pathspec = pathspec
         self._env_vars = env_vars
         flow_name, run_id = pathspec.split("/", 1)
         self._flow_name = flow_name
         self._run_id = run_id
         self._fds: object | None = None
+        # Captured at deploy time from the metaflow graph (see flyte_cli.create).
+        # Falls back to ("start", "end") to mirror metaflow.Run._graph_endpoints
+        # for old runs that predate custom-name endpoint support.
+        self._start_step = start_step or "start"
+        self._end_step = end_step or "end"
 
     def _get_fds(self):
         if self._fds is not None:
@@ -164,11 +181,54 @@ class _RemoteFlowRun:
     def finished(self) -> bool:
         return True
 
+    @property
+    def _graph_endpoints(self) -> tuple[str, str]:
+        # Mirrors metaflow.Run._graph_endpoints — returns (start_step, end_step).
+        # Captured at deploy time rather than read from _parameters task
+        # metadata (which lives in the metadata service, not the data store).
+        return (self._start_step, self._end_step)
+
+    @property
+    def end_task(self) -> _RemoteTask | None:
+        # Mirrors metaflow.Run.end_task — task object for the terminal step.
+        try:
+            return self[self._end_step].task
+        except KeyError:
+            return None
+
     def __getitem__(self, step_name: str) -> _RemoteStep:
         fds = self._get_fds()
         if fds is None:
             raise KeyError(f"Cannot access step {step_name!r}: S3 datastore not available")
         return _RemoteStep(fds, self._flow_name, self._run_id, step_name)
+
+    def __iter__(self):
+        # Discover step names by listing the run prefix in S3. Path layout:
+        #   {sysroot}/{flow_name}/{run_id}/{step_name}/{task_id}/...
+        # Yields a _RemoteStep per discovered step. Required so that test code
+        # like ``{step.id for step in run}`` works against a Flyte execution
+        # whose Metaflow metadata is not accessible from the test runner.
+        fds = self._get_fds()
+        if fds is None:
+            return
+        storage_impl = fds._storage_impl  # type: ignore[attr-defined]
+        prefix = storage_impl.path_join(self._flow_name, self._run_id) + "/"
+        seen: set[str] = set()
+        try:
+            contents = list(storage_impl.list_content([prefix]))
+        except Exception:
+            return
+        for item in contents:
+            remainder = item.path[len(prefix):].lstrip("/")
+            if not remainder:
+                continue
+            step_name = remainder.split("/")[0]
+            # Skip the "_parameters" pseudo-step that Metaflow writes for
+            # flow parameters; metaflow.Run iteration also excludes it.
+            if step_name == "_parameters" or step_name in seen:
+                continue
+            seen.add(step_name)
+            yield _RemoteStep(fds, self._flow_name, self._run_id, step_name)
 
     def __bool__(self) -> bool:
         return True
@@ -250,8 +310,20 @@ class FlyteTriggeredRun(TriggeredRun):
         # Only attempt if S3 datastore is configured.
         if not env_vars.get("METAFLOW_DATASTORE_SYSROOT_S3"):
             return None
+        # Forward graph endpoints captured by `flyte create` so the synthetic
+        # Run can answer ._graph_endpoints / .end_task without going through
+        # the metadata service (which writes start/end_step there but is not
+        # accessible from the test runner in remote-Flyte CI).
+        additional_info = getattr(self.deployer, "additional_info", {}) or {}
+        start_step = additional_info.get("start_step")
+        end_step = additional_info.get("end_step")
         try:
-            return _RemoteFlowRun(pathspec=self.pathspec, env_vars=env_vars)
+            return _RemoteFlowRun(
+                pathspec=self.pathspec,
+                env_vars=env_vars,
+                start_step=start_step,
+                end_step=end_step,
+            )
         except Exception:
             return None
 

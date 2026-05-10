@@ -8,6 +8,7 @@ import pytest
 
 from metaflow_extensions.flyte.plugins.flyte._graph import (
     _is_condition_join,
+    _topological_order,
     _validate,
 )
 from metaflow_extensions.flyte.plugins.flyte._types import NodeType
@@ -254,3 +255,56 @@ class TestSplitSwitchNodeType:
     def test_split_switch_distinct_from_split(self):
         assert NodeType.SPLIT_SWITCH != NodeType.SPLIT
         assert NodeType.SPLIT_SWITCH != NodeType.JOIN
+
+
+class TestTopologicalOrderStartEndAnnotations:
+    """Regression tests for @step(start=True)/@step(end=True) annotation support.
+
+    Metaflow PR Netflix/metaflow#3120 lets a flow's entry/terminal step have
+    any name, exposing them via graph.start_step / graph.end_step. Before
+    this fix, _topological_order hard-coded the entry name as "start" and
+    crashed with KeyError on any flow that used the new annotations.
+    """
+
+    @staticmethod
+    def _annotated_graph() -> _Graph:
+        """entry --(linear)--> done; entry is start, done is end (custom names)."""
+        entry = _Node("entry")
+        entry.out_funcs = ["done"]
+
+        done = _Node("done")
+        done.type = "end"
+        done.in_funcs = ["entry"]
+
+        graph = _Graph([entry, done])
+        graph.start_step = "entry"  # type: ignore[attr-defined]
+        graph.end_step = "done"  # type: ignore[attr-defined]
+        return graph
+
+    def test_topological_order_uses_graph_start_step(self):
+        graph = self._annotated_graph()
+        steps = _topological_order(graph)
+        assert [s.name for s in steps] == ["entry", "done"]
+
+    def test_is_start_and_is_end_flagged_correctly(self):
+        graph = self._annotated_graph()
+        steps = {s.name: s for s in _topological_order(graph)}
+        assert steps["entry"].is_start is True
+        assert steps["entry"].is_end is False
+        assert steps["done"].is_start is False
+        assert steps["done"].is_end is True
+
+    def test_legacy_named_steps_still_work(self):
+        """Backward compat: graphs without start_step attr fall back to literal names."""
+        start = _Node("start")
+        start.out_funcs = ["end"]
+
+        end = _Node("end")
+        end.type = "end"
+        end.in_funcs = ["start"]
+
+        graph = _Graph([start, end])
+        # No start_step / end_step attrs — emulates older metaflow.
+        steps = {s.name: s for s in _topological_order(graph)}
+        assert steps["start"].is_start is True
+        assert steps["end"].is_end is True
