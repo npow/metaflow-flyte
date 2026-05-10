@@ -88,3 +88,34 @@ class TestRemoteFlowRunIter:
             env_vars={},  # no METAFLOW_DATASTORE_SYSROOT_S3
         )
         assert list(run) == []
+
+
+class TestRemoteFlowRunGraphEndpoints:
+    """Captured start_step / end_step exposed via _graph_endpoints + end_task.
+    Required for ux assertions like ``run._graph_endpoints == ("entry", "done")``
+    on flows that use @step(start=True)/@step(end=True) annotations."""
+
+    def test_custom_endpoints_round_trip(self):
+        run = _RemoteFlowRun(
+            pathspec="MyFlow/flyte-abc",
+            env_vars={"METAFLOW_DATASTORE_SYSROOT_S3": "s3://bucket/meta"},
+            start_step="entry",
+            end_step="done",
+        )
+        assert run._graph_endpoints == ("entry", "done")
+
+    def test_falls_back_to_start_end_literals(self):
+        run = _RemoteFlowRun(
+            pathspec="MyFlow/flyte-abc",
+            env_vars={"METAFLOW_DATASTORE_SYSROOT_S3": "s3://bucket/meta"},
+        )
+        # Mirrors metaflow.Run._graph_endpoints fallback for legacy runs.
+        assert run._graph_endpoints == ("start", "end")
+
+    def test_end_task_returns_none_when_fds_unavailable(self):
+        run = _RemoteFlowRun(
+            pathspec="MyFlow/flyte-abc",
+            env_vars={},  # no S3 sysroot — __getitem__ raises KeyError
+            end_step="done",
+        )
+        assert run.end_task is None

@@ -170,6 +170,18 @@ def create(
             "flyte_domain": flyte_domain,
             "saved_env": _saved_env,
         }
+        # Capture graph endpoints so that _RemoteFlowRun can expose
+        # _graph_endpoints / end_task without going through the metadata
+        # service (which writes start_step/end_step there but is not
+        # accessible from the test runner in the remote-Flyte CI path).
+        _graph = getattr(obj, "graph", None)
+        if _graph is not None:
+            _start_step = getattr(_graph, "start_step", None)
+            _end_step = getattr(_graph, "end_step", None)
+            if _start_step:
+                _additional_info["start_step"] = _start_step
+            if _end_step:
+                _additional_info["end_step"] = _end_step
         if flyte_endpoint:
             _additional_info["flyte_endpoint"] = flyte_endpoint
         if image:
